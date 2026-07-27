@@ -5,7 +5,7 @@ use leptos::either::Either;
 use leptos::prelude::*;
 
 #[server]
-async fn list_repos() -> Result<Vec<RepoState>, ServerFnError> {
+pub async fn list_repos() -> Result<Vec<RepoState>, ServerFnError> {
     use std::sync::{Arc, RwLock};
     let ssr_state = expect_context::<Arc<RwLock<crate::api::SSRState>>>();
     let repos = &ssr_state
@@ -43,7 +43,7 @@ pub fn ProjectCatalog() -> impl IntoView {
                                 <li>
                                     <ProjectCard
                                         name=r.name.clone()
-                                        href=format!("/{}", r.name)
+                                        href=format!("/docs/{}", r.name)
                                         last_change_utc=r.head_commit.map(|r| r.timestamp)
                                         description=r.description
                                         col_span

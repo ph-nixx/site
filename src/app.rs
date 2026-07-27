@@ -1,9 +1,9 @@
-use crate::components::{BuildLog, Hero, Nav, ProjectCatalog};
+use crate::components::{BuildLog, Hero, Nav, ProjectCatalog, ProjectDocsLayout};
 use leptos::prelude::*;
-use leptos_meta::{provide_meta_context, MetaTags, Stylesheet, Title};
+use leptos_meta::{MetaTags, Stylesheet, Title, provide_meta_context};
 use leptos_router::{
     components::{ParentRoute, Route, Router, Routes},
-    StaticSegment,
+    path,
 };
 use std::fmt;
 
@@ -100,9 +100,16 @@ pub fn App() -> impl IntoView {
         <Router>
             <main>
                 <Routes fallback=|| "Page not found.".into_view()>
-                    <ParentRoute path=StaticSegment("") view=Nav>
-                        <Route path=StaticSegment("/") view=Home/>
-                        <Route path=StaticSegment("/turd") view=move || view! {<p>was up</p>}/>
+                    <ParentRoute path=path!("") view=Nav>
+                        <Route path=path!("") view=Home/>
+                        <ParentRoute path=path!("docs") view=ProjectDocsLayout>
+                            <Route path=path!(":repo_name") view=|| ()/>
+                            <Route path=path!(":repo_name/") view=|| ()/>
+                            <Route path=path!(":repo_name/:section_name") view=|| ()/>
+                            <Route path=path!(":repo_name/:section_name/") view=|| ()/>
+                            <Route path=path!(":repo_name/:section_name/:file_name") view=|| ()/>
+                            <Route path=path!(":repo_name/:section_name/:file_name/") view=|| ()/>
+                        </ParentRoute>
                     </ParentRoute>
                 </Routes>
             </main>

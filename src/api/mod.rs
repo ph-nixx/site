@@ -4,10 +4,7 @@ pub mod repo_state;
 pub mod repo_cache;
 
 #[cfg(feature = "ssr")]
-pub mod routes;
+pub mod webhooks;
 
 #[cfg(feature = "ssr")]
-pub use routes::routes;
-
-#[cfg(feature = "ssr")]
-pub use routes::SSRState;
+pub use webhooks::SSRState;

@@ -10,10 +10,11 @@ pub struct RepoState {
     pub head_commit: Option<Commit>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct Repo {
     pub id: u64,
     pub name: String,
+    pub full_name: String,
     pub description: Option<String>,
     pub language: Option<String>,
 }
@@ -36,4 +37,13 @@ pub struct Commit {
 pub struct Author {
     pub username: String,
     pub email: String,
+}
+
+/// The convention for a section md file or child directory in `docs/`.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Section {
+    pub title: Option<String>,
+    pub source: Option<String>,
+    pub items: Option<Vec<Section>>,
+    pub html: Option<String>,
 }
