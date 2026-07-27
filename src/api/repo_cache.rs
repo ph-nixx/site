@@ -317,10 +317,10 @@ async fn reconcile_docs(
         .build()
         .expect("create reqwest client");
     let base_url = if let Some(v) = commits.last() {
-        format!(
+        Arc::new(format!(
             "https://raw.githubusercontent.com/{}/{}",
             repo.full_name, v.id
-        )
+        ))
     } else {
         return Ok(());
     };
@@ -342,41 +342,9 @@ async fn reconcile_docs(
         StatusCode::OK => res.text().await?,
         _ => return Ok(()),
     };
-    let Some((fm, _)) = text.split_once("---") else {
+    let Some((fm, md)) = text.split_once("---") else {
         return Ok(());
     };
-    let head_fm = serde_json::from_str::<Section>(fm).map_err(|e| {
-        tracing::error!(
-            repo_id = repo.id,
-            base_url = base_url,
-            frontmatter = %fm,
-        );
-        e
-    })?;
-    let head_fm_str = serde_json::to_string(&head_fm)?;
-    let cached_fm_str = cache_conn
-        .hget::<_, _, Option<String>>("repos:docs", format!("{}:docs:overview.md", repo.id))
-        .await?;
-
-    if cached_fm_str.as_ref().map_or(true, |v| v != &head_fm_str) {
-        let _: () = redis::pipe()
-            .hset(
-                "repos:docs",
-                format!("{}:docs:overview.md", repo.id),
-                head_fm_str,
-            )
-            .publish(format!("repos:{}:docs", repo.id), 0)
-            .query_async(&mut cache_conn)
-            .await?;
-    }
-    let cfm_items = match cached_fm_str {
-        Some(v) => match serde_json::from_str::<Section>(&v).ok() {
-            Some(v) => v.items,
-            _ => None,
-        },
-        _ => None,
-    };
-
     // GFM -> HTML config
     let options = Arc::new({
         let mut options = Options::default();
@@ -388,9 +356,39 @@ async fn reconcile_docs(
         options.extension.footnotes = true;
         options
     });
-    let base_url = Arc::new(base_url);
-    let filepaths = match head_fm.items {
-        Some(hfm_items) => match filepaths_to_update(hfm_items, cfm_items, commits) {
+
+    let mut head_overview = serde_json::from_str::<Section>(fm).map_err(|e| {
+        tracing::error!(
+            repo_id = repo.id,
+            base_url = (*base_url).clone(),
+            frontmatter = %fm,
+        );
+        e
+    })?;
+    head_overview.html = Some(markdown_to_html(md, &options));
+    let head_overview_str = serde_json::to_string(&head_overview)?;
+
+    let cached_overview_str = cache_conn
+        .hget::<_, _, Option<String>>("repos:docs", format!("{}:docs:overview.md", repo.id))
+        .await?;
+    let _: () = redis::pipe()
+        .hset(
+            "repos:docs",
+            format!("{}:docs:overview.md", repo.id),
+            head_overview_str,
+        )
+        .publish(format!("repos:{}:docs", repo.id), 0)
+        .query_async(&mut cache_conn)
+        .await?;
+    let cached_items = match cached_overview_str {
+        Some(v) => match serde_json::from_str::<Section>(&v).ok() {
+            Some(v) => v.items,
+            _ => None,
+        },
+        _ => None,
+    };
+    let filepaths = match head_overview.items {
+        Some(head_items) => match filepaths_to_update(head_items, cached_items, commits) {
             Some(v) => v,
             _ => return Ok(()),
         },

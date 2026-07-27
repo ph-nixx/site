@@ -100,11 +100,11 @@ pub fn ProjectDocsLayout() -> impl IntoView {
                                 <svg viewBox="0 0 24 24" aria_hidden="true"><path d="m6 9 6 6 6-6"/></svg>
                             </summary>
                             <nav>
-                                <a href="#">
+                                <a href=format!("/docs/{repo_name}")>
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>
                                     <span>{title}</span>
                                 </a>
-                                <a href="#">Overview</a>
+                                <a href=format!("/docs/{repo_name}")>Overview</a>
                                 <SectionsNav sections=section.items repo_name />
                             </nav>
                         </details>
