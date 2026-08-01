@@ -1,6 +1,10 @@
 use crate::api::repo_state::{Commit, Heading, Repo, RepoState, Section};
-use comrak::nodes::{NodeCodeBlock, NodeHeading, NodeValue};
-use comrak::{Anchorizer, Arena, Options, format_html, parse_document};
+use comrak::adapters::SyntaxHighlighterAdapter;
+use comrak::nodes::{NodeHeading, NodeValue};
+use comrak::plugins::syntect::SyntectAdapter;
+use comrak::{
+    Anchorizer, Arena, Options, format_html_with_plugins, options::Plugins, parse_document,
+};
 use core::fmt;
 use core::time::Duration;
 use redis::aio::MultiplexedConnection;
@@ -8,6 +12,8 @@ use redis::{AsyncCommands, Msg, RedisError};
 use reqwest;
 use reqwest::StatusCode;
 use serde::Deserialize;
+use std::collections::HashMap;
+use std::fmt::Write;
 use std::sync::Arc;
 use std::{collections::HashSet, env, ops::Not};
 use thiserror::Error;
@@ -46,6 +52,57 @@ struct PushEvent {
     repository: Repo,
     commits: Vec<Commit>,
     head_commit: Option<Commit>,
+}
+
+struct LineNumberAdapter {
+    inner: SyntectAdapter,
+}
+
+impl LineNumberAdapter {
+    fn new(theme: Option<&str>) -> Self {
+        Self {
+            inner: SyntectAdapter::new(theme),
+        }
+    }
+}
+
+impl SyntaxHighlighterAdapter for LineNumberAdapter {
+    fn write_highlighted(
+        &self,
+        output: &mut dyn Write,
+        lang: Option<&str>,
+        code: &str,
+    ) -> std::fmt::Result {
+        let line_count = code.lines().count().max(1);
+        if lang.is_some_and(|l| !l.is_empty()) {
+            write!(output, r#"<span class="line-numbers" aria-hidden="true">"#)?;
+            for n in 1..=line_count {
+                writeln!(output, "{}", n)?;
+            }
+            write!(output, "</span>")?;
+        }
+
+        write!(output, r#"<span class="code-lines">"#)?;
+        self.inner.write_highlighted(output, lang, code)?;
+        write!(output, "</span>")?;
+        Ok(())
+    }
+
+    fn write_pre_tag(
+        &self,
+        output: &mut dyn std::fmt::Write,
+        attributes: HashMap<&'static str, std::borrow::Cow<'_, str>>,
+    ) -> std::fmt::Result {
+        self.inner.write_pre_tag(output, attributes)
+    }
+
+    fn write_code_tag(
+        &self,
+        output: &mut dyn std::fmt::Write,
+        attributes: HashMap<&'static str, std::borrow::Cow<'_, str>>,
+    ) -> std::fmt::Result {
+        self.inner.write_code_tag(output, attributes)
+    }
 }
 
 impl RepoCache {
@@ -518,8 +575,11 @@ fn to_html_with_headings(
         });
     }
 
+    let adapter = LineNumberAdapter::new(None);
+    let mut plugins = Plugins::default();
+    plugins.render.codefence_syntax_highlighter = Some(&adapter);
     let mut html = String::new();
-    format_html(root, &options, &mut html)?;
+    format_html_with_plugins(root, &options, &mut html, &plugins)?;
     if headings.len() > 0 {
         return Ok((html, Some(headings)));
     }
@@ -669,7 +729,8 @@ mod tests {
                 "allow_forking": true,
                 "is_template": false,
                 "language": "pussy",
-                "web_commit_signoff_required": false
+                "web_commit_signoff_required": false,
+                "default_branch": "fuck"
               },
               "pusher": {
                 "name": "ph-onix",
@@ -736,6 +797,7 @@ mod tests {
             "name": "nvim",
             "language": "pussy",
             "description": null,
+            "default_branch": "fuck",
             "head_commit": {
                 "id": "b1c974978a2c744965bba2a4ff406a4e95c94c66",
                 "distinct": true,
@@ -1247,6 +1309,41 @@ mod to_html_tests {
             failures.len(),
             CASES.len(),
             failures.join("\n\n"),
+        );
+    }
+
+    /// Render markdown through the production plugin set and keep only the html.
+    fn render(md: &str) -> String {
+        to_html_with_headings(md, opts(Some(""))).expect("render").0
+    }
+
+    #[test]
+    fn tagged_code_fence_renders_a_line_number_gutter() {
+        let html = render("```rust\nlet a = 1;\nlet b = 2;\n```\n");
+
+        // comrak calls write_pre_tag -> write_code_tag -> write_highlighted, so both
+        // spans land *inside* <pre><code> and the numbers are newline separated.
+        let want = concat!(
+            r#"<pre class="syntax-highlighting">"#,
+            r#"<code class="language-rust">"#,
+            "<span class=\"line-numbers\" aria-hidden=\"true\">1\n2\n</span>",
+            r#"<span class="code-lines">"#,
+        );
+        assert!(html.contains(want), "want prefix:\n{want}\ngot:\n{html}");
+        assert!(
+            html.contains("</span></code></pre>"),
+            "code column is not closed before comrak's </code></pre>:\n{html}"
+        );
+    }
+
+    #[test]
+    fn untagged_code_fence_has_no_gutter() {
+        // comrak passes Some("") for a bare fence, never None.
+        let html = render("```\nplain\n```\n");
+
+        assert!(
+            html.contains("line-numbers").not(),
+            "an untagged fence was given a gutter:\n{html}"
         );
     }
 }

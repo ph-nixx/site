@@ -62,6 +62,19 @@
   --success:    #7fae7f;  --success-bg: rgba(127, 174, 127, 0.12);
   --info:       #6fbbf0;  --info-bg:    rgba(111, 187, 240, 0.12);
 
+  // code syntax — Everforest hues pulled onto the charcoal ramp. Seven inks is
+  // the whole theme: every Sublime scope resolves to one of these, so a grammar
+  // I've never rendered still lands in palette. Keywords lead on luminance
+  // rather than hue, which is what keeps a code block monochrome at a glance.
+  --code-fg:      var(--fg-muted);  // unscoped source text
+  --code-keyword: var(--fg);        // keywords, storage, tags
+  --code-entity:  #b8c9a4;          // sage — functions, types, builtins
+  --code-var:     var(--fg-muted);  // identifiers sit at the body colour
+  --code-string:  #8fae83;          // everforest green, muted
+  --code-const:   #d0cfcc;          // light warm grey — numbers, literals
+  --code-punct:   #8b8984;          // punctuation + symbolic operators
+  --code-comment: var(--fg-subtle);
+
   // selection & focus
   --selection:        rgba(237, 237, 237, 0.16);
   --selection-accent: rgba(111, 187, 240, 0.22);
@@ -1632,51 +1645,205 @@ html { scroll-behavior: smooth; }
     overflow-wrap: anywhere;
   }
 
-  // fenced code — well surface, numbered gutter (each line is a .ln span), own scroll
+  // Fenced code — well surface, own sideways scroll.
+  //
+  // CSS can't count newlines, so a line number has to come from markup. The
+  // block supports two gutters and picks whichever the renderer gives it,
+  // falling back to no gutter at all when it gets neither (the bare highlighter
+  // output, which is one flat run of scope spans with real newlines between
+  // them). Base state below is that bare case, so nothing is required to render
+  // correctly; each gutter layers on top.
+  // The rounding and the scrolling live on different elements on purpose. A
+  // scrollbar is painted outside the border-radius clip — Firefox squares the
+  // bottom two corners off with the track — and an element cannot clip its own
+  // scrollbar, so `pre` keeps the radius and hides its overflow while `code`
+  // does the scrolling inside it. `code` therefore carries the padding too, so
+  // it reaches all four edges and the bar sits on the block's inner bottom edge.
   pre {
     --gutter-w: calc(2ch + 2 * var(--s2));
     background-color: var(--well);
-    background-image: linear-gradient(to right, var(--surface-1) 0 var(--gutter-w), transparent var(--gutter-w));
     border: 1px solid var(--border);
     border-radius: var(--r-md);
-    padding: var(--s4) 0;
-    overflow-x: auto;
+    padding: 0;
+    overflow: hidden;
     font-size: var(--text-md);
     line-height: 1.65;
 
     code {
       display: block;
       font-family: var(--font-mono);
-      color: var(--fg);
+      color: var(--code-fg);   // unscoped source text; the scope classes take it from here
       background: none;
       border: 0;
-      padding: 0;
-      white-space: normal;
-      counter-reset: ln;
+      padding: var(--s4);
+      overflow-x: auto;
+      white-space: pre;        // the highlighter emits real newlines, so honour them
     }
-    code .ln {
-      display: block;
-      counter-increment: ln;
-      white-space: pre;
-      min-height: 1lh;
-      padding-right: var(--s4);
 
-      &::before {
-        content: counter(ln);
+    // ---- gutter A: one number column ----------------------------------------
+    // <code><span class="line-numbers">1\n2\n3</span><span class="code-lines">…</span></code>
+    //
+    // The cheap one, and the shape the palette draws: the renderer counts lines
+    // and prepends a column, leaving the highlighted markup untouched. Scope
+    // spans run across newlines, so anything that wraps *per line* has to cut
+    // and reopen them mid-nest; this doesn't, which is why it's the safe option.
+    //
+    // The column is sticky rather than merely first-in-row, so the numbers hold
+    // their place while a long line scrolls sideways underneath instead of
+    // sliding out of view. It carries the well colour so scrolling code passes
+    // behind it cleanly, and the block drops its own inline padding so the
+    // column can own the left inset and reach the scrollport edge — otherwise
+    // code shows through the gap to its left as it scrolls.
+    &:has(.line-numbers) {
+      // The column is a flex item of the scrollport itself, so its sticky travel
+      // is the full scroll range and nothing has to be sized to max-content —
+      // contrast gutter B, whose rows are one level further in.
+      code {
+        display: flex;
+        padding-inline: 0;
+      }
+
+      .line-numbers {
         position: sticky;
-        left: 0;   // stays in the filled gutter while a long line scrolls
-        display: inline-block;
-        width: var(--gutter-w);
-        padding: 0 var(--s2);
-        margin-right: var(--s3);
-        color: var(--fg-subtle);
+        left: 0;
+        flex: none;
+        min-width: 2ch;
+        padding-left: var(--s3);
+        padding-right: var(--s5);   // a wider gap to the code than to the block edge
+        background: var(--well);
+        color: var(--fg-disabled);
+        font-weight: 500;   // heavier than the code's 400 so the column reads as chrome, not source
+        text-align: right;
+        user-select: none;   // keeps the numbers out of a copied selection
+      }
+      .code-lines { padding-right: var(--s4); }
+    }
+
+    // ---- gutter C: a real grid column, wrapped ------------------------------
+    // <code><span class="ln-num">1</span><span class="ln-code">…</span> …</code>
+    //
+    // The one that sidesteps the problem instead of solving it. Long lines wrap
+    // rather than scroll, so there is nothing to stick to and no sticky column
+    // to be clamped: the gutter is an ordinary grid track that is simply always
+    // on screen. `auto` sizes it to the widest number, so line 1000 needs no
+    // configured width the way the other two do.
+    //
+    // Cost: wrapping only works when the gutter is per-line. A single stacked
+    // column of digits (gutter A) assumes one source line renders as exactly one
+    // row, and the moment a line wraps to two rows the numbers slide out of step
+    // with the code. So this buys robustness with the same renderer work gutter
+    // B needs, not gutter A's.
+    &:has(.ln-num) {
+      code {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        padding-inline: 0;
+      }
+
+      .ln-num {
+        padding-inline: var(--s4);
+        color: var(--fg-disabled);
         text-align: right;
         user-select: none;
-        background: var(--surface-1);
+      }
+
+      // anywhere, not break-word: a bare URL or a long path has no break
+      // opportunity at all, and without this one token would reintroduce the
+      // sideways scroll the whole variant exists to avoid
+      .ln-code {
+        padding-right: var(--s4);
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
       }
     }
-    &::-webkit-scrollbar { height: 10px; }
-    &::-webkit-scrollbar-thumb { background: var(--border); border-radius: var(--r-pill); border: 3px solid var(--well); }
+
+    // ---- gutter B: one span per line ----------------------------------------
+    // <code><span class="ln">…</span><span class="ln">…</span></code>
+    //
+    // Costlier to emit (the renderer must split the scope spans at every
+    // newline and reopen the open ones) but it gives each line its own box,
+    // which is what a line highlight or a permalinked line would later need.
+    // .ln holds no digits of its own — the number is a CSS counter, so the
+    // renderer only wraps, it never writes numbers.
+    //
+    // `white-space: normal` on the code element is deliberate here: each .ln is
+    // display:block and restores `pre` itself, so collapsing the newlines
+    // *between* the spans is what stops every line being followed by a blank one.
+    &:has(.ln) {
+      background-image: linear-gradient(to right, var(--surface-1) 0 var(--gutter-w), transparent var(--gutter-w));
+
+      // A block child of a sideways-scrolling box is only ever as wide as the
+      // *visible* area, never the scrollable width. Left at that default, every
+      // .ln row ends at the right edge of the viewport rather than at the end of
+      // the longest line, and two things break the moment the block is scrolled:
+      // the row's own background stops short, so nothing backs the numbers and
+      // the code slides into them; and the sticky ::before is clamped by that
+      // short box, so it runs out of travel and drifts off to the left instead
+      // of holding the edge. Sizing to max-content makes each row span the full
+      // scroll width and fixes both. min-width keeps a short block filling the
+      // column so the gutter still reaches the right-hand border.
+      code {
+        white-space: normal;
+        counter-reset: ln;
+        padding-inline: 0;
+      }
+
+      .ln {
+        display: block;
+        counter-increment: ln;
+        white-space: pre;
+        min-height: 1lh;
+        padding-right: var(--s4);
+        width: max-content;
+        min-width: 100%;
+
+        &::before {
+          content: counter(ln);
+          position: sticky;
+          left: 0;   // stays in the filled gutter while a long line scrolls
+          display: inline-block;
+          width: var(--gutter-w);
+          padding: 0 var(--s2);
+          margin-right: var(--s3);
+          color: var(--fg-subtle);
+          text-align: right;
+          user-select: none;
+          background: var(--surface-1);
+        }
+      }
+    }
+
+    // The bar belongs to `code` now, not `pre`. Firefox ignores the -webkit-
+    // pseudos, so give it the standard properties too: without them it falls
+    // back to a full-width opaque track, which is the grey band that used to
+    // read as two squared-off bottom corners.
+    //
+    // It rests invisible and fades in on hover. `scrollbar-width: thin` still
+    // reserves the gutter while the thumb is transparent, so revealing it costs
+    // no reflow — only the ink changes. Once shown the thumb is an affordance
+    // being reached for rather than a hairline, so it sits at the comment ink
+    // instead of a border token.
+    code {
+      scrollbar-width: thin;
+      scrollbar-color: transparent transparent;
+      transition: scrollbar-color var(--dur) var(--ease-out);
+
+      &::-webkit-scrollbar { height: 10px; }
+      &::-webkit-scrollbar-track { background: transparent; }
+      &::-webkit-scrollbar-thumb {
+        background: transparent;
+        border-radius: var(--r-pill);
+        border: 3px solid var(--well);
+        transition: background var(--dur) var(--ease-out);
+      }
+    }
+
+    // focus-within as well as hover: Firefox makes a scroll container keyboard
+    // focusable, and a bar you are driving with the arrow keys has to be visible.
+    &:hover, &:focus-within {
+      code { scrollbar-color: var(--fg-subtle) transparent; }
+      code::-webkit-scrollbar-thumb { background: var(--fg-subtle); }
+    }
   }
 
   // blockquote — bg-tint block with a full border (never a side stripe)
@@ -1740,6 +1907,164 @@ html { scroll-behavior: smooth; }
 }
 
 @keyframes doc-in { from { opacity: 0; transform: translateY(6px); } }
+
+// ============================================================================
+// Code syntax — Sublime Text scope naming.
+// https://www.sublimetext.com/docs/scope_naming.html
+//
+// The highlighter opens one <span> per scope push and splits each scope on its
+// dots, so every segment arrives as a separate class: `keyword.control.rust`
+// ships as `class="keyword control rust"`. Two consequences shape everything
+// below.
+//
+//   1. A scope is matched by *compounding* its atoms — `.keyword.control`, never
+//      a bare `.control`. Lone atoms are unsafe: `.string` on its own also
+//      catches `punctuation.definition.string.begin`, and `.type` would sweep up
+//      `storage.type`, `support.type` and `entity.name.type` alike. Every
+//      selector here is anchored at its root atom for that reason.
+//   2. A deeper scope carries more classes, so it outranks a shallower one on
+//      specificity for free: `.keyword.operator.word` (3) beats
+//      `.keyword.operator` (2) beats `.keyword` (1). No ordering games, and the
+//      block stays safe to reorder.
+//
+// Spans nest, so a sub-scope with no rule of its own simply inherits its
+// parent's ink. Only scopes that must *differ* get a selector; the rest are
+// named in the comments, so the map reads complete without dead declarations.
+//
+// `source.*`, `text.*` and every `meta.*` scope stay unstyled on purpose — the
+// convention reserves meta for structure, not colour, and tinting it would paint
+// whole constructs (an entire function body, a whole string) in a single ink.
+//
+// Anchored on `.syntax-highlighting`, the class the renderer puts on <pre>, so
+// the theme travels with the markup instead of with the docs shell. Two classes
+// deep, it also outranks the `.doc pre code` base colour without !important.
+// ============================================================================
+.syntax-highlighting {
+
+  // ---- comment ------------------------------------------------------------
+  // line (double-slash, double-dash, number-sign, percentage) and block both
+  // land here; block.documentation reads as a comment first, so it inherits.
+  .comment { color: var(--code-comment); font-style: italic; }
+  // the opening // or /* is nested inside .comment and would otherwise be
+  // claimed by .punctuation — restore the ink, inherit the italic
+  .punctuation.definition.comment { color: var(--code-comment); }
+
+  // ---- string -------------------------------------------------------------
+  // quoted (single, double, triple, other), unquoted and regexp share one ink
+  .string { color: var(--code-string); }
+  // quotes belong to the literal they open, not to the punctuation family
+  .punctuation.definition.string { color: var(--code-string); }
+  // escapes and format specifiers lift out of the green so they stay legible
+  // inside a long literal
+  .constant.character.escape,
+  .constant.other.placeholder { color: var(--code-const); }
+
+  // ---- constant -----------------------------------------------------------
+  // numeric (integer, float, complex — with their base/suffix parts), language
+  // (true/false/nil) and other (symbol, colour) all read as literal values
+  .constant { color: var(--code-const); }
+  // the decimal point sits inside the number it belongs to
+  .punctuation.separator.decimal { color: var(--code-const); }
+
+  // ---- entity -------------------------------------------------------------
+  // declaration sites: class, struct, enum, union, trait, interface, impl, type,
+  // function (incl. constructor/destructor)
+  .entity { color: var(--code-entity); }
+  .entity.other.inherited-class { color: var(--code-entity); font-style: italic; }
+  // namespaces and labels are addresses, not types — they keep the identifier ink
+  .entity.name.namespace,
+  .entity.name.label { color: var(--code-var); }
+  .entity.name.constant { color: var(--code-const); }
+  // markup tags carry the structure, so they take the keyword's luminance lead;
+  // their attribute names stay at the identifier ink so name/value separate
+  .entity.name.tag { color: var(--code-keyword); }
+  .entity.other.attribute-name { color: var(--code-var); }
+  // section headings (config groups, TOC entries) get weight, not colour
+  .entity.name.section { color: var(--fg); font-weight: 600; }
+
+  // ---- keyword ------------------------------------------------------------
+  // control (conditional, import, flow, loop, return), declaration and other
+  .keyword { color: var(--code-keyword); }
+  // symbolic operators read as punctuation — = + & | are shape, not vocabulary
+  .keyword.operator { color: var(--code-punct); }
+  // …but worded ones are vocabulary again: and, or, not, in, is
+  .keyword.operator.word { color: var(--code-keyword); }
+
+  // ---- storage ------------------------------------------------------------
+  // type (int, fn, class) and modifier (static, pub, const). The convention now
+  // folds these into keyword.declaration, so they share the keyword ink and both
+  // spellings render identically whichever one a grammar emits.
+  .storage { color: var(--code-keyword); }
+
+  // ---- support ------------------------------------------------------------
+  // the library surface: function, class, type, module
+  .support { color: var(--code-entity); }
+  .support.constant { color: var(--code-const); }
+
+  // ---- variable -----------------------------------------------------------
+  // other (readwrite, member), parameter — the body colour, so identifiers form
+  // the calm field that everything else is read against
+  .variable { color: var(--code-var); }
+  .variable.other.constant { color: var(--code-const); }
+  .variable.function { color: var(--code-entity); }
+  // this / self / super — language-provided, so they lean keyword
+  .variable.language { color: var(--code-keyword); font-style: italic; }
+  .variable.annotation { color: var(--code-entity); }
+
+  // ---- punctuation --------------------------------------------------------
+  // accessor, separator (+ continuation), terminator, and every section flavour
+  // (block, braces, brackets, parens, group, interpolation) with their
+  // begin/end variants
+  .punctuation { color: var(--code-punct); }
+  // sigils that introduce a construct belong to what they introduce
+  .punctuation.definition.keyword { color: var(--code-keyword); }
+  .punctuation.definition.variable { color: var(--code-var); }
+  .punctuation.definition.annotation { color: var(--code-entity); }
+  .punctuation.definition.generic { color: var(--code-punct); }
+
+  // ---- invalid ------------------------------------------------------------
+  // a faint wash rather than a red slab — enough to catch the eye mid-block
+  // without turning a snippet into an error report
+  .invalid { color: var(--error); }
+  .invalid.illegal {
+    background: var(--error-bg);
+    border-radius: var(--r-sm);
+    padding: 0 2px;
+  }
+  .invalid.deprecated {
+    color: var(--warning);
+    background: var(--warning-bg);
+    border-radius: var(--r-sm);
+    padding: 0 2px;
+  }
+
+  // ---- markup -------------------------------------------------------------
+  // prose grammars (markdown, diff) fenced inside a code block
+  .markup.heading { color: var(--fg); font-weight: 600; }
+  .markup.bold { color: var(--fg); font-weight: 650; }
+  .markup.italic { font-style: italic; }
+  .markup.underline { text-decoration: underline; }
+  .markup.underline.link,
+  .markup.other.link {
+    color: var(--link);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  // raw spans (inline and block) are code-within-code
+  .markup.raw { color: var(--code-entity); }
+  .markup.list { color: var(--code-punct); }
+  .markup.quote { color: var(--fg-muted); font-style: italic; }
+
+  // diff — the one place the semantic tokens earn their keep, since inserted /
+  // deleted / changed is exactly what they signal everywhere else on the site
+  .markup.inserted { color: var(--success); }
+  .markup.deleted  { color: var(--error); }
+  .markup.changed  { color: var(--warning); }
+  .markup.ignored  { color: var(--fg-disabled); }
+  // the leading + / - of a diff hunk matches its row
+  .punctuation.definition.inserted { color: var(--success); }
+  .punctuation.definition.deleted  { color: var(--error); }
+}
 
 // ----------------------------------------------------------------------------
 // Doc 404 — the not-found state that renders in place of comrak output when a
