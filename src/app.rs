@@ -9,7 +9,7 @@ use std::fmt;
 
 pub const EMAIL: &'static str = "pmiller0706@gmail.com";
 pub const MAILTO_EMAIL: &'static str = "mailto:pmiller0706@gmail.com";
-pub const GITHUB_URL: &'static str = "https://github.com/ph-onix";
+pub const GITHUB_URL: &'static str = "https://github.com/ph-nixx";
 
 pub enum Icon {
     RaGithubLogo,
