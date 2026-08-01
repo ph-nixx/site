@@ -108,6 +108,7 @@
   --doc-size:    15px;
   --z-pane:      10;           // panes sit below the sticky top bar (--z-sticky)
   --link:        var(--info);
+  --doc-in:      0.5s;         // reading column + TOC enter together — one knob for both
 
   // overlays
   --overlay-hover: rgba(237, 237, 237, 0.06);
@@ -132,14 +133,27 @@
 [hidden] { display: none !important; }
 ::selection { background: var(--selection); }
 
+// No page scrolls sideways. The pair matters: a lone `overflow-x` on <body> is
+// only honoured while the root's own overflow is `visible` — the moment anything
+// sets the root, body's value stops propagating to the viewport and sideways
+// scroll comes back. Setting both closes that off.
+//
+// `clip` and not `hidden` on purpose: `hidden` makes the element a scroll
+// container, which would re-parent every sticky pane on the docs routes (top
+// bar, project nav, TOC) onto the root instead of the viewport and desync their
+// top offsets. `clip` trims the overflow without creating a scroller, so sticky
+// keeps measuring against the viewport exactly as it does now.
+html, body {
+  overflow-x: clip;
+  overscroll-behavior-x: none;
+}
+
 body {
   background: var(--bg);
   color: var(--fg);
   font-family: var(--font-sans);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
-  overflow-x: clip;
-  overscroll-behavior-x: none;
   min-height: 100dvh;
 }
 
@@ -1327,9 +1341,10 @@ body {
 //                 inner .doc > div holds the comrak output and is the prose
 //                 measure; bare comrak elements are themed as descendants of .doc
 //   .doc-nav      right aside — page links (<section>) + on-this-page TOC (<nav>)
-// .docs-shell is the grid the three panes sit in. .doc and .doc-nav are emitted
-// as sibling fragment roots by the child route's <Outlet/> (no wrapper), so they
-// stay direct grid items.
+// The three panes sit in two nested grids: .docs-shell splits nav | rest, and
+// the <main> in its second track splits doc | toc. .doc and .doc-nav are emitted
+// as sibling fragment roots inside that <main>, so they are its direct grid
+// items and the two tracks still measure exactly as one flat three-column grid.
 // ============================================================================
 
 // smooth in-page jumps for the TOC anchors (reset under reduced-motion below)
@@ -1339,26 +1354,42 @@ html { scroll-behavior: smooth; }
   max-width: var(--shell-max);
   margin-inline: auto;
   display: grid;
-  // doc column is the page scroll; nav + aside pin at viewport height and
-  // scroll internally when long
-  grid-template-columns: var(--nav-w) minmax(0, 1fr) var(--toc-w);
+  // outer split — the nav rail, then everything else. The doc/toc split lives on
+  // the <main> below; the two tracks together measure the same as the flat
+  // nav | doc | toc grid this used to be.
+  grid-template-columns: var(--nav-w) minmax(0, 1fr);
   align-items: start;
 
-  @media (max-width: 1180px) { grid-template-columns: var(--nav-w) minmax(0, 1fr); }
-  @media (max-width: 860px)  { grid-template-columns: minmax(0, 1fr); }
+  @media (max-width: 860px) { grid-template-columns: minmax(0, 1fr); }
 }
 
-// Hold the doc column steady through hydration. On refresh the <main>'s Suspense
-// swaps in an empty fallback for a frame; with nothing in the column the page
-// loses its height, the viewport scrollbar drops, and every track — this one
-// included — widens by the gutter width before content streams back and snaps it
-// in. Reserving a viewport-tall min-height keeps the scrollbar present, so the
+// Inner split — the reading column and the right aside. <main> is the shell's
+// 1fr item and re-divides it into doc | toc, so .doc and .doc-nav are grid items
+// here rather than on the shell. align-items: start keeps each pane at its own
+// content height (the shell did this for them before), which is what lets
+// .doc-nav stick: it sizes to itself while its grid area still spans the row.
+//
+// The min-height also holds the doc column steady through hydration. On refresh
+// the Suspense swaps in an empty fallback for a frame; with nothing in the column
+// the page loses its height, the viewport scrollbar drops, and every track — this
+// one included — widens by the gutter width before content streams back and snaps
+// it in. Reserving a viewport-tall min-height keeps the scrollbar present, so the
 // measure never changes, and width: 100% + min-width: 0 pins the item to its 1fr
 // track for a constant width from the first paint through hydration.
 .docs-shell > main {
   width: 100%;
   min-width: 0;
   min-height: calc(100dvh - var(--nav-h));
+
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--toc-w);
+  align-items: start;
+
+  // no aside in the row — the 404 renders alone — so the reading column takes
+  // the whole width instead of leaving a dead toc track
+  &:not(:has(> .doc-nav)) { grid-template-columns: minmax(0, 1fr); }
+
+  @media (max-width: 1180px) { grid-template-columns: minmax(0, 1fr); }   // lg: the TOC drops
 }
 
 // Docs top bar — align the bar's content with the ProjectNav (the left-most
@@ -1526,7 +1557,11 @@ html { scroll-behavior: smooth; }
     color: var(--doc-body);
     font-size: var(--doc-size);
     line-height: 1.7;
-    animation: doc-in 0.5s var(--ease-out) both;
+    animation: doc-in var(--doc-in) var(--ease-out) both;
+    // authored prose is the one thing here that can out-measure its column — a
+    // bare URL or a long path has no break opportunity and pushes the width.
+    // Wrapping it is the fix; the clip above would only hide it out of reach.
+    overflow-wrap: break-word;
   }
 
   // flow rhythm — stack spacing between top-level prose blocks
@@ -1540,7 +1575,6 @@ html { scroll-behavior: smooth; }
     scroll-margin-top: calc(var(--nav-h) + var(--s5));
   }
   h1 { font-size: 27px; line-height: 1.2; letter-spacing: -0.02em; margin-bottom: var(--s2); }
-  h1 + p { color: var(--fg-muted); font-size: 16px; }   // lede
   h2 { font-size: 20px; line-height: 1.3; letter-spacing: -0.01em; margin-top: var(--s7); }
   h3 { font-size: 17px; line-height: 1.35; margin-top: var(--s6); }
   h4 { font-size: 14px; line-height: 1.4; margin-top: var(--s5); color: var(--fg); }
@@ -1579,7 +1613,9 @@ html { scroll-behavior: smooth; }
   // lists
   :is(ul, ol) { padding-left: 1.5em; }
   li { margin-top: var(--s2); }
-  li::marker { color: var(--fg-subtle); }
+  // markers sit a step behind the row they label — dimmer, but thickened so the
+  // stroke still holds at that contrast
+  li::marker { color: var(--fg-disabled); font-weight: 600; }
   ul > li::marker { content: "–  "; }   // dash markers on unordered lists
   ol li::marker { font-family: var(--font-mono); font-size: 0.85em; }
   li > :is(ul, ol) { margin-top: var(--s2); }
@@ -1645,7 +1681,7 @@ html { scroll-behavior: smooth; }
 
   // blockquote — bg-tint block with a full border (never a side stripe)
   blockquote {
-    background: var(--surface-1);
+    background: var(--well);
     border: 1px solid var(--border);
     border-radius: var(--r-md);
     padding: var(--s4) var(--s5);
@@ -1722,7 +1758,7 @@ html { scroll-behavior: smooth; }
   color: var(--doc-body);
   font-size: var(--doc-size);
   line-height: 1.7;
-  animation: doc-in 0.5s var(--ease-out) both;
+  animation: doc-in var(--doc-in) var(--ease-out) both;
 
   // status code — a large mono heading standing over the title
   > p:first-child {
@@ -1780,6 +1816,12 @@ html { scroll-behavior: smooth; }
     &:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--focus); }
   }
 
+  // It renders in two places: inside <main> when a page slug fails (the rules
+  // above place it in the reading column), or as the shell's lone child when the
+  // section list itself fails — there it has no nav beside it, so it takes the
+  // whole row instead of being squeezed into the nav track.
+  .docs-shell > & { grid-column: 1 / -1; }
+
   @media (max-width: 860px) {
     border-left: 0;
     padding: var(--s6) var(--s5) var(--s7);
@@ -1817,6 +1859,13 @@ html { scroll-behavior: smooth; }
     display: flex;
     flex-direction: column;
     gap: var(--s3);
+
+    // Same entrance as the reading column, on the matching node: .doc > div and
+    // .doc-nav > div are the two inner wrappers, and both are inserted by the
+    // one Suspend that resolves the doc — same frame, same timing, so the pair
+    // rises together with no delay to tune. Staying off .doc-nav itself leaves
+    // the sticky box's own transform alone.
+    animation: doc-in var(--doc-in) var(--ease-out) both;
   }
 
   // TOC caption ("ON THIS PAGE")
@@ -1892,5 +1941,8 @@ html { scroll-behavior: smooth; }
 
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
-  .doc > article { animation: none; }
+  // the entrance lives on the inner wrappers, not the panes themselves
+  .doc > div,
+  .doc-nav > div,
+  .doc-404 { animation: none; }
 }

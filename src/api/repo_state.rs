@@ -17,6 +17,7 @@ pub struct Repo {
     pub full_name: String,
     pub description: Option<String>,
     pub language: Option<String>,
+    pub default_branch: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
@@ -40,10 +41,21 @@ pub struct Author {
 }
 
 /// The convention for a section md file or child directory in `docs/`.
+///
+/// * html: raw html string parsed from the source md
+/// * headings: extracted heading hierarchy in source order
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Section {
     pub title: Option<String>,
     pub source: Option<String>,
     pub items: Option<Vec<Section>>,
     pub html: Option<String>,
+    pub headings: Option<Vec<Heading>>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Heading {
+    pub text: String,
+    pub slug: String,
+    pub items: Option<Vec<Heading>>,
 }

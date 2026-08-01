@@ -1,5 +1,7 @@
-use crate::api::repo_state::{Commit, Repo, RepoState, Section};
-use comrak::{Options, markdown_to_html};
+use crate::api::repo_state::{Commit, Heading, Repo, RepoState, Section};
+use comrak::nodes::{NodeCodeBlock, NodeHeading, NodeValue};
+use comrak::{Anchorizer, Arena, Options, format_html, parse_document};
+use core::fmt;
 use core::time::Duration;
 use redis::aio::MultiplexedConnection;
 use redis::{AsyncCommands, Msg, RedisError};
@@ -16,12 +18,14 @@ use tracing::Instrument;
 
 #[derive(Debug, Error)]
 pub enum CachingError {
-    #[error("redis operation failed during caching")]
+    #[error("redis operation failed during caching {0}")]
     Redis(#[from] RedisError),
-    #[error("content failed to parse")]
+    #[error("content failed to parse {0}")]
     BadJson(#[from] serde_json::Error),
-    #[error("http error")]
+    #[error("http {0}")]
     HTTP(#[from] reqwest::Error),
+    #[error("failed to parse md to html")]
+    MdParsing(#[from] fmt::Error),
 }
 
 /// Manages Github repository commit and documentation state in a Redis data store.
@@ -37,8 +41,8 @@ pub struct RepoCache {
 
 #[derive(Deserialize)]
 struct PushEvent {
-    // #[serde(rename = "ref")]
-    // git_ref: String,
+    #[serde(rename = "ref")]
+    git_ref: String,
     repository: Repo,
     commits: Vec<Commit>,
     head_commit: Option<Commit>,
@@ -197,7 +201,7 @@ impl RepoCache {
     /// Update a repo state and the commit log in response to a webhook event and notify
     /// any subscribers.
     ///
-    /// I will delete existing values in the cache.
+    /// I only consider events that occur on the default branch.
     ///
     /// NOTE: My job is to parse and cache fields from a JSON string
     ///       with a schema I have been defined on; it's up to the caller to validate the source
@@ -211,6 +215,9 @@ impl RepoCache {
             );
             e
         })?;
+        if v.git_ref != format!("refs/heads/{}", v.repository.default_branch) {
+            return Ok(());
+        }
         let repo_id = v.repository.id;
         let repo_name = v.repository.name.clone();
         let new_repo_state = RepoState {
@@ -236,10 +243,9 @@ impl RepoCache {
         let conn = self.client.clone();
         tokio::spawn(async move {
             if let Err(e) = reconcile_docs(conn, v.repository, v.commits).await {
-                tracing::error!(repo_id, error = %e, "couldn't reconcile doc");
+                tracing::error!(repo_id, error = ?e, "couldn't reconcile doc");
             }
         });
-
         let repo_channel = format!("repos:{repo_id}:state");
         let commits_key = format!("{}:commits", repo_id);
         let commit_log = "commits";
@@ -268,6 +274,8 @@ impl RepoCache {
     ///
     /// If provided an id I will watch that repo's channel otherwise I will watch
     /// every repo state change.
+    ///
+    /// PLANNED: remove deleted files from the cache
     pub async fn repo_subscribe<F, Fut>(&mut self, id: Option<u64>, mut f: F)
     where
         F: FnMut(String) -> Fut + Send + 'static,
@@ -298,14 +306,11 @@ impl RepoCache {
 
 /// Update the cache and site routes to reflect any changed or created md files
 /// registered in `docs/overview.md` json frontmatter.
-///
-///  1. optimistically update the json frontmatter string in the cache and publish the change
-///     so the servers have fresh routes
-///  2. collect all the files paths need to be recached
-///  3. start futures for each file path that
-///    1. fetches the raw utf8 bytes of the file contents
-///    2. parse the GFM to html
-///    3. caches the result
+// 1. optimistically update the json frontmatter string in the cache and publish the change
+//    so the servers have fresh routes
+// 2. collect all the file paths that need to be cached or recached
+// 3. start futures for each file path that fetches the raw utf8 file contents,
+//    parses the GFM to html and caches the result
 #[tracing::instrument(skip(cache_conn, commits), fields(repo_id = repo.id))]
 async fn reconcile_docs(
     mut cache_conn: MultiplexedConnection,
@@ -316,14 +321,16 @@ async fn reconcile_docs(
         .timeout(Duration::new(10, 0))
         .build()
         .expect("create reqwest client");
+
     let base_url = if let Some(v) = commits.last() {
-        Arc::new(format!(
+        format!(
             "https://raw.githubusercontent.com/{}/{}",
             repo.full_name, v.id
-        ))
+        )
     } else {
         return Ok(());
     };
+
     let res = http_client
         .get(format!("{base_url}/docs/overview.md"))
         .send()
@@ -342,11 +349,20 @@ async fn reconcile_docs(
         StatusCode::OK => res.text().await?,
         _ => return Ok(()),
     };
+    // split on the md front matter delim
     let Some((fm, md)) = text.split_once("---") else {
         return Ok(());
     };
-    // GFM -> HTML config
+    let mut head_overview = serde_json::from_str::<Section>(fm).map_err(|e| {
+        tracing::error!(
+            repo_id = repo.id,
+            base_url = base_url,
+            frontmatter = %fm,
+        );
+        e
+    })?;
     let options = Arc::new({
+        // GFM -> HTML config
         let mut options = Options::default();
         options.extension.strikethrough = true;
         options.extension.table = true;
@@ -354,20 +370,15 @@ async fn reconcile_docs(
         options.extension.tasklist = true;
         options.extension.tagfilter = true;
         options.extension.footnotes = true;
+        options.extension.header_id_prefix = Some(String::new());
         options
     });
-
-    let mut head_overview = serde_json::from_str::<Section>(fm).map_err(|e| {
-        tracing::error!(
-            repo_id = repo.id,
-            base_url = (*base_url).clone(),
-            frontmatter = %fm,
-        );
-        e
+    to_html_with_headings(md, options.clone()).map(|(html, headings)| {
+        head_overview.html = Some(html);
+        head_overview.headings = headings;
     })?;
-    head_overview.html = Some(markdown_to_html(md, &options));
-    let head_overview_str = serde_json::to_string(&head_overview)?;
 
+    let head_overview_str = serde_json::to_string(&head_overview)?;
     let cached_overview_str = cache_conn
         .hget::<_, _, Option<String>>("repos:docs", format!("{}:docs:overview.md", repo.id))
         .await?;
@@ -394,6 +405,7 @@ async fn reconcile_docs(
         },
         _ => return Ok(()),
     };
+
     let mut join_set: JoinSet<Result<(), CachingError>> = JoinSet::new();
     filepaths.for_each(|fp| {
         let base_url = base_url.clone();
@@ -412,7 +424,7 @@ async fn reconcile_docs(
                             url = %format!("{base_url}/docs/overview.md"),
                             timeout = e.is_timeout(),
                             connect = e.is_connect(),
-                            error = %e,
+                            error = ?e,
                             "overview.md request failed",
                         );
                         e
@@ -423,12 +435,14 @@ async fn reconcile_docs(
                 })?;
 
                 let res = res.text().await?;
-                let section = Section {
-                    html: Some(markdown_to_html(&res, &options)),
-                    title: None,
-                    source: None,
-                    items: None,
-                };
+                let section =
+                    to_html_with_headings(&res, options).map(|(html, headings)| Section {
+                        html: Some(html),
+                        headings: headings,
+                        title: None,
+                        source: None,
+                        items: None,
+                    })?;
                 let section = serde_json::to_string::<Section>(&section)?;
                 let key = fp.replace('/', ":");
                 let _: () = client
@@ -441,12 +455,75 @@ async fn reconcile_docs(
     });
     while let Some(res) = join_set.join_next().await {
         match res {
-            Ok(Err(e)) => tracing::error!(error = %e, "fail to cache file"),
+            Ok(Err(e)) => tracing::error!(error = %e, "could not to cache file"),
             Err(e) => tracing::error!(error = %e, "task panic"),
             _ => {}
         }
     }
     Ok(())
+}
+
+/// Parse a GFM file into html and return the top level slugified headings.
+fn to_html_with_headings(
+    md: &str,
+    options: Arc<Options>,
+) -> Result<(String, Option<Vec<Heading>>), fmt::Error> {
+    let arena = Arena::new();
+    let root = parse_document(&arena, md, &options);
+    let mut anchorizer = Anchorizer::new();
+    let mut headings: Vec<Heading> = Vec::new();
+    let mut nodes = root.descendants().into_iter().peekable();
+    while let Some(node) = nodes.next() {
+        let level = match &node.data.borrow().value {
+            NodeValue::Heading(NodeHeading { level, .. }) => *level,
+            _ => continue,
+        };
+        let text = node.collect_text();
+        let slug = anchorizer.anchorize(&text);
+        if level != 1 || slug.len() == 0 {
+            continue;
+        }
+
+        let mut heading_hierarchy: Vec<Heading> = vec![];
+        while let Some(&node) = nodes.peek() {
+            let level = match &node.data.borrow().value {
+                NodeValue::Heading(NodeHeading { level, .. }) => *level,
+                _ => {
+                    nodes.next();
+                    continue;
+                }
+            };
+            if level == 1 {
+                break;
+            }
+
+            let Some(node) = nodes.next() else {
+                break;
+            };
+            let text = node.collect_text();
+            let slug = anchorizer.anchorize(&text);
+            if level != 2 || slug.len() == 0 {
+                continue;
+            }
+            heading_hierarchy.push(Heading {
+                text,
+                slug,
+                items: None,
+            });
+        }
+        headings.push(Heading {
+            text,
+            slug,
+            items: Some(heading_hierarchy),
+        });
+    }
+
+    let mut html = String::new();
+    format_html(root, &options, &mut html)?;
+    if headings.len() > 0 {
+        return Ok((html, Some(headings)));
+    }
+    Ok((html, None))
 }
 
 /// Extract the set of files that need to be cached or recached.
@@ -746,6 +823,7 @@ mod tests {
             source: Some(source.into()),
             items: None,
             html: None,
+            headings: None,
         }
     }
 
@@ -755,6 +833,7 @@ mod tests {
             source: Some(source.into()),
             items: Some(children),
             html: None,
+            headings: None,
         }
     }
 
@@ -867,6 +946,7 @@ mod tests {
                 source: Some("orphan".into()),
                 items: None,
                 html: None,
+                headings: None,
             },
             // dir with no source name is skipped entirely
             Section {
@@ -874,6 +954,7 @@ mod tests {
                 source: None,
                 items: Some(vec![file("ghost.md")]),
                 html: None,
+                headings: None,
             },
         ];
         // Cold cache MUST ignore commits: this modify/remove pair changes nothing.
@@ -895,5 +976,277 @@ mod tests {
         .map(String::from)
         .collect();
         assert_eq!(got, want);
+    }
+}
+
+#[cfg(test)]
+mod to_html_tests {
+    use super::*;
+
+    struct Expected {
+        text: &'static str,
+        children: &'static [&'static str],
+    }
+
+    struct Case {
+        name: &'static str,
+        md: &'static str,
+        /// Value for `extension.header_id_prefix`; `Some("")` is what production uses.
+        prefix: Option<&'static str>,
+        want: &'static [Expected],
+    }
+
+    struct Rendered {
+        level: u32,
+        id: String,
+        text: String,
+    }
+
+    const CASES: &[Case] = &[
+        Case {
+            name: "control: sibling h1s with no nesting",
+            md: "# Alpha\n\n# Beta\n",
+            prefix: Some(""),
+            want: &[
+                Expected {
+                    text: "Alpha",
+                    children: &[],
+                },
+                Expected {
+                    text: "Beta",
+                    children: &[],
+                },
+            ],
+        },
+        Case {
+            name: "h2s belong to the h1 above them & all non h1s preceding the first h1 are ignored",
+            md: "## Orphan\n\n# Alpha\n\n## A-one\n\n# Beta\n\n## B-one\n",
+            prefix: Some(""),
+            want: &[
+                Expected {
+                    text: "Alpha",
+                    children: &["A-one"],
+                },
+                Expected {
+                    text: "Beta",
+                    children: &["B-one"],
+                },
+            ],
+        },
+        Case {
+            name: "anchorizer: a duplicate h3 must not shift the next h1's slug suffix",
+            md: "# Intro\n\n### Intro\n\n# Intro\n",
+            prefix: Some(""),
+            want: &[
+                Expected {
+                    text: "Intro",
+                    children: &[],
+                },
+                Expected {
+                    text: "Intro",
+                    children: &[],
+                },
+            ],
+        },
+        Case {
+            name: "text: a code span contributes its literal to the label and the slug",
+            md: "# The `docs/` convention\n",
+            prefix: Some(""),
+            want: &[Expected {
+                text: "The docs/ convention",
+                children: &[],
+            }],
+        },
+        Case {
+            name: "text: a setext soft break is a word boundary",
+            md: "Deploy and\nrollback\n==========\n",
+            prefix: Some(""),
+            want: &[Expected {
+                text: "Deploy and rollback",
+                children: &[],
+            }],
+        },
+        Case {
+            // Flip this expectation if quoted headings should stay out of the nav.
+            name: "containers: a heading inside a blockquote is still addressable",
+            md: "# Alpha\n\n> ## Quoted\n",
+            prefix: Some(""),
+            want: &[Expected {
+                text: "Alpha",
+                children: &["Quoted"],
+            }],
+        },
+        Case {
+            name: "empty slug: a heading that anchorizes to nothing is not listed",
+            md: "# Alpha\n\n## 🚀\n\n# Beta\n",
+            prefix: Some(""),
+            want: &[
+                Expected {
+                    text: "Alpha",
+                    children: &[],
+                },
+                Expected {
+                    text: "Beta",
+                    children: &[],
+                },
+            ],
+        },
+    ];
+
+    fn opts(prefix: Option<&str>) -> Arc<Options<'_>> {
+        let mut options = Options::default();
+        options.extension.strikethrough = true;
+        options.extension.table = true;
+        options.extension.autolink = true;
+        options.extension.tasklist = true;
+        options.extension.tagfilter = true;
+        options.extension.footnotes = true;
+        options.extension.header_id_prefix = prefix.map(String::from);
+        Arc::new(options)
+    }
+
+    fn attr(fragment: &str, name: &str) -> Option<String> {
+        let needle = format!(" {name}=\"");
+        let start = fragment.find(&needle)? + needle.len();
+        let end = start + fragment[start..].find('"')?;
+        Some(fragment[start..end].to_string())
+    }
+
+    fn unescape(v: &str) -> String {
+        v.replace("&quot;", "\"")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&amp;", "&")
+    }
+
+    fn strip_tags(fragment: &str) -> String {
+        let mut out = String::new();
+        let mut depth = 0usize;
+        for c in fragment.chars() {
+            match c {
+                '<' => depth += 1,
+                '>' => depth = depth.saturating_sub(1),
+                _ if depth == 0 => out.push(c),
+                _ => {}
+            }
+        }
+        unescape(&out)
+    }
+
+    fn rendered_headings(html: &str) -> Vec<Rendered> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while let Some(rel) = html[i..].find("<h") {
+            let start = i + rel;
+            let level = match html[start + 2..]
+                .chars()
+                .next()
+                .and_then(|c| c.to_digit(10))
+            {
+                Some(l) if (1..=6).contains(&l) => l,
+                _ => {
+                    i = start + 2;
+                    continue;
+                }
+            };
+            let Some(tag_end) = html[start..].find('>').map(|r| start + r) else {
+                break;
+            };
+            let id = attr(&html[start..tag_end], "id").unwrap_or_default();
+            let close = format!("</h{level}>");
+            let Some(content_end) = html[tag_end..].find(&close).map(|r| tag_end + r) else {
+                break;
+            };
+            let content = &html[tag_end + 1..content_end];
+            let text = match attr(content, "data-heading-content") {
+                Some(v) => unescape(&v),
+                None => strip_tags(content),
+            };
+            out.push(Rendered { level, id, text });
+            i = content_end + close.len();
+        }
+        out
+    }
+
+    /// Flatten the returned heading tree into (level, slug, text) in document order.
+    fn flatten(headings: &Option<Vec<Heading>>) -> Vec<(u32, String, String)> {
+        let mut out = Vec::new();
+        for h in headings.iter().flatten() {
+            out.push((1, h.slug.clone(), h.text.clone()));
+            for c in h.items.iter().flatten() {
+                out.push((2, c.slug.clone(), c.text.clone()));
+            }
+        }
+        out
+    }
+
+    fn flatten_want(want: &[Expected]) -> Vec<(u32, String)> {
+        want.iter()
+            .flat_map(|e| {
+                std::iter::once((1, e.text.to_string()))
+                    .chain(e.children.iter().map(|c| (2, c.to_string())))
+            })
+            .collect()
+    }
+
+    fn check(case: &Case) -> Result<(), String> {
+        let (html, headings) = to_html_with_headings(case.md, opts(case.prefix))
+            .map_err(|e| format!("render: {e}"))?;
+
+        let actual = flatten(&headings);
+        let labels: Vec<(u32, String)> = actual.iter().map(|(l, _, t)| (*l, t.clone())).collect();
+        let want = flatten_want(case.want);
+        if labels != want {
+            return Err(format!(
+                "toc shape/labels\n    want: {want:?}\n    got:  {labels:?}"
+            ));
+        }
+
+        let rendered: Vec<Rendered> = rendered_headings(&html)
+            .into_iter()
+            .filter(|r| r.level <= 2)
+            .collect();
+        let mut cursor = 0;
+        for (_, slug, text) in &actual {
+            let Some(offset) = rendered[cursor..].iter().position(|r| &r.text == text) else {
+                return Err(format!(
+                    "heading {text:?} is in the toc but not in the rendered html at or after position {cursor}"
+                ));
+            };
+            let found = &rendered[cursor + offset];
+            if &found.id != slug {
+                return Err(format!(
+                    "heading {text:?} has slug {slug:?} but the rendered id is {:?}",
+                    found.id
+                ));
+            }
+            cursor += offset + 1;
+        }
+
+        let mut seen = HashSet::new();
+        for (_, slug, text) in &actual {
+            if slug.is_empty() {
+                return Err(format!("heading {text:?} produced an empty slug"));
+            }
+            if seen.insert(slug.clone()).not() {
+                return Err(format!("slug {slug:?} is used by more than one heading"));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn to_html_with_headings_contract() {
+        let failures: Vec<String> = CASES
+            .iter()
+            .filter_map(|c| check(c).err().map(|e| format!("  {}\n    {e}", c.name)))
+            .collect();
+        assert!(
+            failures.is_empty(),
+            "{} of {} cases failed:\n\n{}\n",
+            failures.len(),
+            CASES.len(),
+            failures.join("\n\n"),
+        );
     }
 }
