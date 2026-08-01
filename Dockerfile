@@ -1,14 +1,16 @@
 FROM rustlang/rust:nightly-bookworm as builder
 
-# Pin the nightly. RUSTUP_TOOLCHAIN outranks rust-toolchain.toml, so this governs
-# both the cargo-leptos install and the app build below.
+# Pin the nightly. RUSTUP_TOOLCHAIN outranks rust-toolchain.toml, so the app build
+# below cannot drift onto a newer nightly.
 ENV RUSTUP_TOOLCHAIN=nightly-2026-07-20
 RUN rustup toolchain install $RUSTUP_TOOLCHAIN
 
-RUN wget https://github.com/cargo-bins/cargo-binstall/releases/latest/download/cargo-binstall-x86_64-unknown-linux-musl.tgz
-RUN tar -xvf cargo-binstall-x86_64-unknown-linux-musl.tgz
-RUN cp cargo-binstall /usr/local/cargo/bin
-RUN cargo binstall cargo-leptos --version 0.3.7 --locked -y
+# Fetch the prebuilt cargo-leptos. The releases/download endpoint needs no GitHub API
+# call, so it avoids the rate limit that otherwise forces a source build.
+ARG CARGO_LEPTOS_VERSION=0.3.7
+ARG TARGET=x86_64-unknown-linux-gnu
+RUN wget -qO- https://github.com/leptos-rs/cargo-leptos/releases/download/v${CARGO_LEPTOS_VERSION}/cargo-leptos-${TARGET}.tar.gz \
+    | tar -xz -C /usr/local/cargo/bin --strip-components=1 cargo-leptos-${TARGET}/cargo-leptos
 RUN mkdir -p /app
 WORKDIR /app
 COPY . .
