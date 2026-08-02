@@ -18,6 +18,14 @@ RUN rustup target add wasm32-unknown-unknown
 RUN cargo leptos build --release -vv
 
 FROM debian:bookworm-slim as runtime
+
+# bookworm-slim ships no trust store, so reqwest fails at client construction with
+# "No CA certificates were loaded from the system". Kept above the COPYs so the apt
+# layer survives code changes.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /app/target/release/site /app/bin
 COPY --from=builder /app/target/site /app/site
 WORKDIR /app
