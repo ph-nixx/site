@@ -33,3 +33,14 @@ may grow up to a factor of *2.5* which makes the final cached value 30KB without
 I will have no more than 5 active project at a time and if we are extreme and say 100 
 markdown files per project this is a total cache size of 14.6MB (without GZIP) which is negligible.
 
+Issues:
+
+- [ ] buildlog is not using the global github account url making the commit url invalid
+
+- [ ] Project and overview html in `src/components/docs.rs` are seperate <a> elements when they should be under one so effect apply to both at the same time
+
+Planned:
+
+- [ ] project icon provided by `.svg` files in `docs/` and registered via `docs/overview.md`
+
+- [ ] yaml front matter in `docs/overview.md`
