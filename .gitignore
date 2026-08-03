@@ -11,9 +11,8 @@ Cargo.lock
 **/*.rs.bk
 
 # whitelisted doc directory contents
-docs/*
-!docs/specs
-!docs/specs/**
+docs/misc.md
+docs/palette-v2.1-warm.html
 
 .claude*
 PRODUCT.md
