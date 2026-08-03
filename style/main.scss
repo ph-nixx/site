@@ -284,14 +284,19 @@ body {
       backdrop-filter: none;
     }
 
-    // container — max-width + the flex row
+    // container — the flex row. One inset on every route: the shell offset plus
+    // the ProjectNav's own content edge (nav padding s5 + the s3 the titles sit
+    // at), so the bar's content lands on the sidebar section titles on docs and
+    // keeps the exact same geometry on the landing page.
     > div {
-      @extend .nav-align;
+      padding-inline: calc(max(0px, (100% - var(--shell-max)) / 2) + var(--s5) + var(--s3));
       height: 100%;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: var(--s5);
+
+      @media (max-width: 860px) { padding-inline: var(--s5); }   // nav collapses; content sits at the s5 gutter
     }
   }
 
@@ -1403,25 +1408,6 @@ html { scroll-behavior: smooth; }
   &:not(:has(> .doc-nav)) { grid-template-columns: minmax(0, 1fr); }
 
   @media (max-width: 1180px) { grid-template-columns: minmax(0, 1fr); }   // lg: the TOC drops
-}
-
-// Docs top bar — align the bar's content with the ProjectNav (the left-most
-// column) instead of the landing container. Left inset = shell offset + the
-// nav's own content edge (nav padding s5 + the s3 the title/captions sit at), so
-// the breadcrumb's left edge lands on the sidebar section titles; the same inset
-// on the right mirrors it so the bar reads even.
-//
-// The bar renders ONCE (Nav is the route parent of every page) and carries no
-// route class, so I key this off structure instead of a modifier: the bar is the
-// element right before the route <Outlet/>, and only the docs route drops a
-// .docs-shell there. :has(+ .docs-shell) therefore lights up on docs routes and
-// stays dark everywhere else, so the landing page keeps the base rule's
-// 1240-container alignment. Scoping it to the bar's own > nav > div keeps it the
-// top nav's styling and nothing else.
-.nav-sticky:has(+ .docs-shell) > nav > div {
-  padding-inline: calc(max(0px, (100% - var(--shell-max)) / 2) + var(--s5) + var(--s3));
-
-  @media (max-width: 860px) { padding-inline: var(--s5); }   // nav collapses; content sits at the s5 gutter
 }
 
 // ----------------------------------------------------------------------------

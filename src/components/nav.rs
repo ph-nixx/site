@@ -69,7 +69,7 @@ fn NavMenuRow(
         path.starts_with(&href_).to_string()
     };
     view! {
-        <a href=href aria_current=selected>
+        <a href=href aria-current=selected>
             {match icon { Some(v) => v.into_view(), None => view! { <></> }.into_any()}}
             <span>{name}</span>
         </a>
@@ -88,7 +88,7 @@ fn Crumbs() -> impl IntoView {
         .rsplit_once('/')
     {
         Some((_, "")) | None => {
-            vec![view! { <li><span aria_current="page">home</span></li> }.into_any()]
+            vec![view! { <li><span aria-current="page">home</span></li> }.into_any()]
         }
         Some((active_href, active_route)) => {
             let mut href = String::new();
@@ -106,7 +106,7 @@ fn Crumbs() -> impl IntoView {
                     }
                 });
             result.push(
-                view! { <li><span aria_current="page">{active_route}</span></li> }.into_any(),
+                view! { <li><span aria-current="page">{active_route}</span></li> }.into_any(),
             );
             result
         }
