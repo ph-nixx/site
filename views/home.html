@@ -1,0 +1,28 @@
+{{define "title"}}A Good Title{{end}}
+
+{{define "main"}}
+<h2>Latest Snippets</h2>
+<p>There's nothing to see here yet!</p>
+{{end}}
+
+{{define "home"}}
+<!doctype html>
+<html lang='en'>
+
+<head>
+	<meta charset='utf-8'>
+	<title>{{template "title" .}}</title>
+</head>
+
+<body>
+	<header>
+		<h1><a href="/">Snippetbox</a></h1>
+	</header>
+	<main>
+		{{template "main" .}}
+	</main>
+	<footer>Built with <a href='https://golang.org/'>Go</a></footer>
+</body>
+
+</html>
+{{end}}

@@ -2,4 +2,6 @@
 .claude**
 .impeccable
 
+.air*
 .env*
+tmp**
