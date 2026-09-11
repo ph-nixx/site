@@ -7,7 +7,7 @@ dev:
 	wait
 
 css:
-	tailwindcss -i ./static/input.css -o ./static/tailwind.css --watch
+	./tailwind -i ./views/style/input.css -o ./static/output.css --watch=always
 
 server:
 	air

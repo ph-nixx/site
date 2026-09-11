@@ -1,7 +1,7 @@
 {{define "title"}}A Good Title{{end}}
 
 {{define "main"}}
-<h2>Latest Snippets</h2>
+<h2 class="bg-red text-3xl font-bold underline">Latest Snippets</h2>
 <p>There's nothing to see here yet!</p>
 {{end}}
 
@@ -12,6 +12,7 @@
 <head>
 	<meta charset='utf-8'>
 	<title>{{template "title" .}}</title>
+	<link href="./static/output.css" rel="stylesheet">
 </head>
 
 <body>

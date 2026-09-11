@@ -2,6 +2,11 @@
 .claude**
 .impeccable
 
-.air*
-.env*
+# Dev tooling
 tmp**
+tailwind**
+
+.env*
+
+# artifacts
+static/*.css
