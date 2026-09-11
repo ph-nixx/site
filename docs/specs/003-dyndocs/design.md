@@ -43,4 +43,4 @@ Planned:
 
 - [ ] project icon provided by `.svg` files in `docs/` and registered via `docs/overview.md`
 
-- [ ] yaml front matter in `docs/overview.md`
+- [ ] switch form json to yaml front matter in `docs/overview.md`
