@@ -1,1 +1,360 @@
 @import "tailwindcss";
+
+@theme {
+  /* palette — surfaces */
+  --color-well: #151413;
+  --color-bg: #181716;
+  --color-surface-1: #1d1c1a;
+  --color-surface-2: #21201e;
+  --color-surface-3: #272523;
+
+  /* palette — borders */
+  --color-border: #2f2e2b;
+  --color-border-strong: #373530;
+  --color-border-disabled: #252422;
+
+  /* palette — text & icons */
+  --color-fg: #edecea;
+  --color-icon: #d9d8d5;
+  --color-fg-muted: #b4b2ae;
+  --color-fg-subtle: #908e89;
+  --color-fg-disabled: #565451;
+  --color-doc-body: #e0e0e0;
+
+  /* palette — inverse */
+  --color-inverse-bg: #edecea;
+  --color-inverse-fg: #181716;
+
+  /* palette — status */
+  --color-status-on: #ededed;
+  --color-status-idle: #a1a1a1;
+  --color-status-off: #7a7a7a;
+
+  /* palette — semantic feedback */
+  --color-error: #d96b6b;
+  --color-error-bg: rgba(217, 107, 107, 0.12);
+  --color-warning: #d9904c;
+  --color-warning-bg: rgba(217, 144, 76, 0.12);
+  --color-success: #7fae7f;
+  --color-success-bg: rgba(127, 174, 127, 0.12);
+  --color-info: #6fbbf0;
+  --color-info-bg: rgba(111, 187, 240, 0.12);
+
+  /* palette — code syntax */
+  --color-code-fg: var(--color-fg-muted);
+  --color-code-keyword: var(--color-fg);
+  --color-code-entity: #b8c9a4;
+  --color-code-var: var(--color-fg-muted);
+  --color-code-string: #8fae83;
+  --color-code-const: #d0cfcc;
+  --color-code-punct: #8b8984;
+  --color-code-comment: var(--color-fg-subtle);
+
+  /* palette — selection, focus, overlay, link */
+  --color-selection: rgba(237, 237, 237, 0.16);
+  --color-selection-accent: rgba(111, 187, 240, 0.22);
+  --color-focus: #6fbbf0;
+  --color-overlay-hover: rgba(237, 237, 237, 0.06);
+  --color-link: var(--color-info);
+
+  /* sizing — font sizes */
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 24px;
+
+  /* sizing — spacing scale */
+  --spacing-s2: 8px;
+  --spacing-s3: 12px;
+  --spacing-s4: 16px;
+  --spacing-s5: 24px;
+  --spacing-s6: 32px;
+  --spacing-s7: 48px;
+  --spacing-s8: 64px;
+  --spacing-section-pad: 50px;
+
+  /* sizing — border radius */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+
+  /* fonts */
+  --font-sans: "Geist", sans-serif;
+  --font-mono: "Geist Mono", monospace;
+  --font-alt: "Inter", sans-serif;
+}
+
+:root {
+  /* layout + motion constants — one-off values, not reusable enough to be
+     Tailwind theme keys, but still consumed by the classes below */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur: 0.3s;
+  --nav-h: 50px;
+  --z-sticky: 100;
+  --container-width: 1240px;
+}
+
+/* Shared page gutter — floors at --spacing-s4 on narrow viewports, otherwise
+   centers content at --container-width. Used on every full-width row (nav,
+   hero, home-content) so their left/right edges line up. */
+@utility nav-align {
+  padding-inline: max(var(--spacing-s4), calc((100% - var(--container-width)) / 2 + var(--spacing-s4)));
+}
+
+@font-face {
+  font-family: "Geist";
+  src: url("/static/fonts/Geist/Geist-VariableFont_wght.ttf") format("truetype");
+  font-weight: 100 900;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "Geist";
+  src: url("/static/fonts/Geist/Geist-Italic-VariableFont_wght.ttf") format("truetype");
+  font-weight: 100 900;
+  font-style: italic;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  src: url("/static/fonts/Geist/GeistMono-VariableFont_wght.ttf") format("truetype");
+  font-weight: 100 900;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  src: url("/static/fonts/Geist/GeistMono-Italic-VariableFont_wght.ttf") format("truetype");
+  font-weight: 100 900;
+  font-style: italic;
+}
+
+::selection {
+  background: var(--color-selection);
+}
+
+html,
+body {
+  overflow-x: clip;
+  overscroll-behavior-x: none;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100dvh;
+}
+
+/* Terminal entrance choreography — ported from main.scss .term/.term-render/.caret */
+
+@keyframes term-rise {
+  from { opacity: 0; transform: translateY(6px); }
+}
+
+@keyframes caret-blink {
+  0%   { opacity: 1; }
+  50%  { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+.term-seam-in {
+  animation: term-rise 0.45s var(--ease-out) backwards;
+}
+
+.term-row-in {
+  animation: term-rise 0.4s var(--ease-out) 2300ms backwards;
+}
+
+.term-caret-beat {
+  animation: caret-blink 1.15s step-end 2300ms 3 forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .term-seam-in,
+  .term-row-in,
+  .term-caret-beat {
+    animation: none;
+  }
+}
+
+/* Skeleton shimmer + title scramble — ported from main.scss .pcatalog-skel/.bl-skel.
+   Kept as component CSS rather than inline utilities: the nth-child pseudo-element
+   keyframe sequencing here isn't expressible as Tailwind classes. */
+
+@keyframes skel-wave {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
+}
+
+@keyframes glyph-a {
+  0%   { content: "A"; } 16% { content: "d"; } 33% { content: "f"; }
+  50%  { content: "L"; } 66% { content: "K"; } 83% { content: "h"; } 100% { content: "Q"; }
+}
+@keyframes glyph-b {
+  0%   { content: "a"; } 16% { content: "A"; } 33% { content: "e"; }
+  50%  { content: "d"; } 66% { content: "d"; } 83% { content: "s"; } 100% { content: "z"; }
+}
+@keyframes glyph-c {
+  0%   { content: "R"; } 16% { content: "j"; } 33% { content: "v"; }
+  50%  { content: "q"; } 66% { content: "W"; } 83% { content: "b"; } 100% { content: "x"; }
+}
+@keyframes glyph-d {
+  0%   { content: "z"; } 16% { content: "X"; } 33% { content: "n"; }
+  50%  { content: "m"; } 66% { content: "G"; } 83% { content: "T"; } 100% { content: "e"; }
+}
+
+.pcatalog-skel > ul {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: var(--spacing-s5);
+}
+.pcatalog-skel > ul > li { grid-column: 1 / -1; }
+@media (min-width: 768px) {
+  .pcatalog-skel > ul > li:nth-child(1),
+  .pcatalog-skel > ul > li:nth-child(2) { grid-column: span 6; }
+}
+.pcatalog-skel > ul > li > div {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-s5);
+  background: var(--color-surface-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-s6);
+}
+.pcatalog-skel span {
+  display: block;
+  height: 13px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(100deg, var(--color-surface-2) 30%, var(--color-surface-3) 50%, var(--color-surface-2) 70%);
+  background-size: 200% 100%;
+  animation: skel-wave 2.8s linear infinite;
+}
+.pcatalog-skel > ul > li > div > div:first-child {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-s3);
+}
+.pcatalog-skel > ul > li > div > div:first-child > span:nth-child(1) {
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-sm);
+}
+.pcatalog-skel > ul > li > div > div:first-child > span:nth-child(2) {
+  display: inline-flex;
+  width: auto;
+  height: auto;
+  background: none;
+  animation: none;
+  font-size: var(--text-lg);
+  font-weight: 500;
+  color: var(--color-border);
+}
+.pcatalog-skel > ul > li > div > div:first-child > span:nth-child(2) > span {
+  width: 0.7em;
+  height: auto;
+  background: none;
+  border-radius: 0;
+  animation: none;
+  text-align: center;
+}
+.pcatalog-skel > ul > li > div > div:first-child > span:nth-child(2) > span::before {
+  content: "·";
+  animation-duration: 0.66s;
+  animation-timing-function: steps(1, end);
+  animation-iteration-count: infinite;
+}
+.pcatalog-skel > ul > li > div > div:first-child > span:nth-child(2) > span:nth-child(1)::before { animation-name: glyph-a; animation-delay: -0.05s; }
+.pcatalog-skel > ul > li > div > div:first-child > span:nth-child(2) > span:nth-child(2)::before { animation-name: glyph-c; animation-delay: -0.31s; }
+.pcatalog-skel > ul > li > div > div:first-child > span:nth-child(2) > span:nth-child(3)::before { animation-name: glyph-b; animation-delay: -0.12s; }
+.pcatalog-skel > ul > li > div > div:first-child > span:nth-child(2) > span:nth-child(4)::before { animation-name: glyph-d; animation-delay: -0.44s; }
+.pcatalog-skel > ul > li > div > div:first-child > span:nth-child(2) > span:nth-child(5)::before { animation-name: glyph-b; animation-delay: -0.22s; }
+.pcatalog-skel > ul > li > div > div:first-child > span:nth-child(2) > span:nth-child(6)::before { animation-name: glyph-a; animation-delay: -0.53s; }
+.pcatalog-skel > ul > li > div > div:first-child > span:nth-child(2) > span:nth-child(7)::before { animation-name: glyph-d; animation-delay: -0.18s; }
+.pcatalog-skel > ul > li > div > div:first-child > span:nth-child(2) > span:nth-child(8)::before { animation-name: glyph-c; animation-delay: -0.37s; }
+.pcatalog-skel > ul > li > div > div:first-child > span:nth-child(3) {
+  width: 128px;
+  height: 20px;
+  margin-left: auto;
+  border-radius: var(--radius-pill);
+}
+.pcatalog-skel > ul > li > div > div:last-child {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-s3);
+}
+.pcatalog-skel > ul > li > div > div:last-child > span:nth-child(1) { width: 65%; }
+.pcatalog-skel > ul > li > div > div:last-child > span:nth-child(2) { display: none; }
+
+.bl-skel {
+  list-style: none;
+  border-top: 1px solid var(--color-border);
+}
+.bl-skel > li { border-bottom: 1px solid var(--color-border); }
+.bl-skel > li:last-child { border-bottom: none; }
+.bl-skel > li > div {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-s3);
+  padding: var(--spacing-s4) var(--spacing-s3);
+}
+.bl-skel span {
+  display: block;
+  height: 13px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(100deg, var(--color-surface-2) 30%, var(--color-surface-3) 50%, var(--color-surface-2) 70%);
+  background-size: 200% 100%;
+  animation: skel-wave 2.8s linear infinite;
+}
+.bl-skel > li > div > span:nth-child(1) { width: 54px; flex-shrink: 0; }
+.bl-skel > li > div > span:nth-child(2) {
+  display: inline-flex;
+  width: 62px;
+  height: auto;
+  flex-shrink: 0;
+  background: none;
+  animation: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-border-strong);
+}
+.bl-skel > li > div > span:nth-child(2) > span {
+  width: 0.6em;
+  height: auto;
+  background: none;
+  border-radius: 0;
+  animation: none;
+  text-align: center;
+}
+.bl-skel > li > div > span:nth-child(2) > span::before {
+  content: "·";
+  animation-duration: 0.66s;
+  animation-timing-function: steps(1, end);
+  animation-iteration-count: infinite;
+}
+.bl-skel > li > div > span:nth-child(2) > span:nth-child(1)::before { animation-name: glyph-a; animation-delay: -0.05s; }
+.bl-skel > li > div > span:nth-child(2) > span:nth-child(2)::before { animation-name: glyph-c; animation-delay: -0.31s; }
+.bl-skel > li > div > span:nth-child(2) > span:nth-child(3)::before { animation-name: glyph-b; animation-delay: -0.12s; }
+.bl-skel > li > div > span:nth-child(2) > span:nth-child(4)::before { animation-name: glyph-d; animation-delay: -0.44s; }
+.bl-skel > li > div > span:nth-child(2) > span:nth-child(5)::before { animation-name: glyph-b; animation-delay: -0.22s; }
+.bl-skel > li > div > span:nth-child(3) { width: 58%; }
+.bl-skel > li:nth-child(2) > div > span:nth-child(3) { width: 44%; }
+.bl-skel > li:nth-child(3) > div > span:nth-child(3) { width: 66%; }
+.bl-skel > li:nth-child(4) > div > span:nth-child(3) { width: 39%; }
+.bl-skel > li:nth-child(5) > div > span:nth-child(3) { width: 52%; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pcatalog-skel span,
+  .pcatalog-skel span::before,
+  .bl-skel span,
+  .bl-skel span::before {
+    animation: none;
+  }
+}

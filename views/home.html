@@ -1,28 +1,63 @@
-{{define "title"}}A Good Title{{end}}
-
-{{define "main"}}
-<h2 class="bg-red text-3xl font-bold underline">Latest Snippets</h2>
-<p>There's nothing to see here yet!</p>
-{{end}}
+{{define "title"}}Beta{{end}}
 
 {{define "home"}}
 <!doctype html>
 <html lang='en'>
 
 <head>
-	<meta charset='utf-8'>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<title>{{template "title" .}}</title>
+	<link rel="icon" href="/static/favicon.ico" sizes="any">
+	<link rel="icon" href="/static/light-favicon.svg" type="image/svg+xml" media="(prefers-color-scheme: light)">
+	<link rel="icon" href="/static/dark-favicon.svg" type="image/svg+xml" media="(prefers-color-scheme: dark)">
 	<link href="./static/output.css" rel="stylesheet">
 </head>
 
 <body>
-	<header>
-		<h1><a href="/">Snippetbox</a></h1>
-	</header>
 	<main>
-		{{template "main" .}}
+		{{template "nav" .}}
+		{{template "hero" .}}
+		<div class="home-content nav-align flex flex-col pt-s3">
+			{{template "project_catalog" .}}
+			{{template "build_log" .}}
+			<footer role="contentinfo" aria-label="Footer"
+				class="py-s5 flex items-center justify-between gap-s5 flex-wrap">
+				<p class="inline-flex items-center gap-s3 text-xs text-fg-subtle">
+					<span class="inline-flex items-center gap-[3px]">
+						<svg class="w-[11px] h-[11px] stroke-2">
+							<use href="#LuCopyright"></use>
+						</svg>
+						Pheonx Miller
+					</span>
+					<span aria-hidden="true">—</span>
+					<a href="https://github.com/ph-nixx/site" target="_blank" rel="noreferrer noopener"
+						class="text-fg-subtle no-underline rounded-sm transition-colors duration-[var(--dur)] ease-[var(--ease-out)] hover:text-fg hover:underline hover:underline-offset-[3px] focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-bg),0_0_0_4px_var(--color-focus)]">Source</a>
+				</p>
+				<div class="flex items-center gap-s5">
+					<a href="mailto:pmiller0706@gmail.com"
+						class="group inline-flex items-center gap-[6px] [margin:-2px_-4px] [padding:2px_4px] text-sm text-fg-muted no-underline rounded-sm transition-colors duration-[var(--dur)] ease-[var(--ease-out)] hover:text-fg focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-bg),0_0_0_4px_var(--color-focus)]">
+						<span aria-hidden="true"
+							class="inline-flex text-fg-subtle transition-colors duration-[var(--dur)] ease-[var(--ease-out)] group-hover:text-fg">
+							<svg class="w-4 h-4">
+								<use href="#LuMail"></use>
+							</svg>
+						</span>
+						pmiller0706@gmail.com
+					</a>
+					<a href="https://github.com/ph-nixx" target="_blank" rel="noreferrer noopener" aria-label="GitHub"
+						class="text-fg-muted no-underline rounded-sm transition-colors duration-[var(--dur)] ease-[var(--ease-out)] hover:text-fg focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-bg),0_0_0_4px_var(--color-focus)]">
+						<span aria-hidden="true" class="inline-flex">
+							<svg class="w-4 h-4">
+								<use href="#RaGithubLogo"></use>
+							</svg>
+						</span>
+					</a>
+				</div>
+			</footer>
+		</div>
 	</main>
-	<footer>Built with <a href='https://golang.org/'>Go</a></footer>
+	{{template "icons" .}}
 </body>
 
 </html>

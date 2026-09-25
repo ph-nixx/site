@@ -1,0 +1,22 @@
+{{define "terminal"}}
+<div class="flex flex-col gap-s4 [contain:layout_paint] max-[860px]:max-w-[520px]">
+	<div aria-hidden="true" class="term-seam-in flex items-center gap-s3 text-fg">
+		<svg class="w-9 h-9 stroke-2 shrink-0">
+			<use href="#VsBash"></use>
+		</svg>
+		<hr class="flex-1 border-0 border-t border-border m-0" />
+	</div>
+	<p class="text-fg-muted font-mono text-md">Loading</p>
+	<div class="term-row-in group flex items-center gap-s2 font-mono text-md border-t border-border pt-s3">
+		<span aria-hidden="true" class="inline-flex items-center text-fg-muted">
+			<span>$&nbsp;</span>
+			<span
+				class="term-caret-beat flex-none inline-block w-[1ch] h-[1.15em] bg-fg opacity-0 group-focus-within:hidden"></span>
+		</span>
+		<label for="cmd-input" class="sr-only">Terminal command</label>
+		<input id="cmd-input" type="text" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"
+			class="flex-1 bg-transparent border-none outline-none text-fg font-[family-name:inherit] text-[length:inherit] [caret-color:var(--color-fg)]"
+			disabled />
+	</div>
+</div>
+{{end}}

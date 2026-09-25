@@ -1,0 +1,13 @@
+{{define "hero"}}
+<div class="nav-align grid grid-cols-[1fr_520px] items-center gap-s7 bg-well border-b border-border py-s7 max-[860px]:grid-cols-1 max-[860px]:items-start"
+	aria-labelledby="hero-heading">
+	<div class="min-w-0">
+		<h1 id="hero-heading"
+			class="text-[clamp(22px,3vw,26px)] font-semibold tracking-[-0.02em] text-fg [text-wrap:balance]">Project
+			Docs</h1>
+		<p class="mt-s4 max-w-[54ch] text-lg leading-[1.6] text-fg-muted [text-wrap:pretty]">Living documentation of
+			software development — architecture decisions, cadence, and live demos.</p>
+	</div>
+	{{template "terminal" .}}
+</div>
+{{end}}

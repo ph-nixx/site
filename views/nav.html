@@ -1,0 +1,51 @@
+{{define "nav"}}
+<div class="nav-sticky sticky top-0 z-[var(--z-sticky)] w-full">
+	<nav aria-label="Primary"
+		class="w-full h-[var(--nav-h)] bg-[rgba(24,23,22,0.78)] [backdrop-filter:blur(10px)_saturate(1.4)] border-b border-border">
+		<div class="nav-align h-full flex items-center justify-between gap-s5">
+			<nav aria-label="Breadcrumb" class="min-w-0 font-mono text-sm tracking-[0.01em]">
+				<ol class="flex items-center gap-[6px] min-w-0 list-none">
+					<li
+						class="flex items-center gap-[6px] text-fg-muted before:content-[''] before:shrink-0 before:w-[2px] before:h-[18px] before:bg-border-strong before:rounded-[1px] before:rotate-[18deg] before:mx-[2px]">
+						<span aria-current="page" class="text-fg cursor-default">home</span>
+					</li>
+				</ol>
+			</nav>
+			<button popovertarget="nav-menu" aria-label="Open menu"
+				class="inline-flex items-center justify-center w-[30px] h-[30px] shrink-0 text-fg-muted bg-transparent border border-border rounded-md cursor-pointer transition-colors duration-[var(--dur)] ease-[var(--ease-out)] hover:bg-overlay-hover hover:border-border-strong hover:text-fg focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-bg),0_0_0_4px_var(--color-focus)]">
+				<svg class="w-[18px] h-[18px]">
+					<use href="#LuMenu"></use>
+				</svg>
+			</button>
+			<div id="nav-menu" popover="" aria-label="Menu"
+				class="m-0 p-s2 min-w-[248px] max-h-[min(60vh,420px)] overflow-auto text-fg bg-surface-2 border border-border rounded-md fixed inset-auto top-[46px] right-[max(var(--spacing-s3),calc((100vw_-_var(--container-width))/2_+_var(--spacing-s3)))] opacity-0 -translate-y-1 transition-discrete transition-[opacity,transform,overlay,display] duration-[var(--dur)] ease-[var(--ease-out)] starting:opacity-0 starting:-translate-y-1 [&:popover-open]:opacity-100 [&:popover-open]:translate-y-0">
+				<p class="px-[10px] py-[4px] font-mono text-xs tracking-[0.08em] uppercase text-fg-subtle">Projects</p>
+				<ul class="flex flex-col gap-[1px] list-none"></ul>
+				<hr class="h-[2px] my-s2 mx-[6px] border-0 bg-border" />
+				<ul class="flex flex-col gap-[1px] list-none">
+					<li>
+						<a href="mailto:pmiller0706@gmail.com" aria-current="false"
+							class="grid grid-cols-[16px_1fr] items-center gap-[8px] px-[10px] py-[5px] rounded-[6px] text-fg-muted text-sm no-underline transition-colors duration-[var(--dur)] ease-[var(--ease-out)] hover:bg-overlay-hover hover:text-fg focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-surface-2),0_0_0_4px_var(--color-focus)]">
+							<svg class="col-start-1 w-[15px] h-[15px] text-fg-subtle">
+								<use href="#LuMail"></use>
+							</svg>
+							<span
+								class="col-start-2 min-w-0 overflow-hidden whitespace-nowrap text-ellipsis">pmiller0706@gmail.com</span>
+						</a>
+					</li>
+					<li>
+						<a href="https://github.com/ph-nixx" aria-current="false"
+							class="grid grid-cols-[16px_1fr] items-center gap-[8px] px-[10px] py-[5px] rounded-[6px] text-fg-muted text-sm no-underline transition-colors duration-[var(--dur)] ease-[var(--ease-out)] hover:bg-overlay-hover hover:text-fg focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-surface-2),0_0_0_4px_var(--color-focus)]">
+							<svg class="col-start-1 w-[15px] h-[15px] text-fg-subtle">
+								<use href="#RaGithubLogo"></use>
+							</svg>
+							<span
+								class="col-start-2 min-w-0 overflow-hidden whitespace-nowrap text-ellipsis">Github</span>
+						</a>
+					</li>
+				</ul>
+			</div>
+		</div>
+	</nav>
+</div>
+{{end}}

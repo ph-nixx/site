@@ -1,0 +1,24 @@
+{{define "error"}}
+<!doctype html>
+<html lang='en'>
+
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>{{.StatusCode}}</title>
+	<link rel="icon" href="/static/favicon.ico" sizes="any">
+	<link rel="icon" href="/static/light-favicon.svg" type="image/svg+xml" media="(prefers-color-scheme: light)">
+	<link rel="icon" href="/static/dark-favicon.svg" type="image/svg+xml" media="(prefers-color-scheme: dark)">
+	<link href="./static/output.css" rel="stylesheet">
+</head>
+
+<body class="min-h-dvh flex items-center justify-center px-s4">
+	<div class="flex items-center gap-s5">
+		<h1 class="font-mono text-xl font-medium text-fg leading-[32px] pr-s5 border-r border-border">{{.StatusCode}}
+		</h1>
+		<p class="text-sm text-fg leading-[32px]">{{.Message}}</p>
+	</div>
+</body>
+
+</html>
+{{end}}
