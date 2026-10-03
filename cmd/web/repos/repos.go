@@ -3,6 +3,7 @@ package repos
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"sync"
 	"time"
 
@@ -20,10 +21,46 @@ const (
 	REPOS_UPDATES_CHANNEL = "repos:updates"
 )
 
+// Subscription is a live feed of messages from one channel.
+type Subscription interface {
+	Channel(opts ...redis.ChannelOption) <-chan *redis.Message
+	Close() error
+}
+
+// The subset of [redis.Client] functionality that Repos needs.
+type Client interface {
+	HGetAll(ctx context.Context, key string) *redis.MapStringStringCmd
+	HGet(ctx context.Context, key, field string) *redis.StringCmd
+	// Subscribe returns only once the subscription is confirmed.
+	Subscribe(ctx context.Context, channels ...string) (Subscription, error)
+}
+
+// redisClient adapts *redis.Client to Client. The embedded client supplies
+// HGetAll and HGet directly; only Subscribe is overridden.
+type redisClient struct {
+	*redis.Client
+}
+
+// Wraps a [*redis.Client] client as a Client.
+func FromRedisClient(rdb *redis.Client) Client {
+	return &redisClient{Client: rdb}
+}
+
+// Subscribe opens a PubSub, waits for confirmation, and adapts it to Subscription.
+// It shadows the embedded client's Subscribe, which returns *redis.PubSub.
+func (s *redisClient) Subscribe(ctx context.Context, channels ...string) (Subscription, error) {
+	ps := s.Client.Subscribe(ctx, channels...)
+	if _, err := ps.Receive(ctx); err != nil {
+		ps.Close()
+		return nil, err
+	}
+	return ps, nil
+}
+
 type Repos struct {
-	rdb   *redis.Client
-	cache LocalCache
-	mu    sync.RWMutex
+	client Client
+	cache  LocalCache
+	mu     sync.RWMutex
 }
 
 // A mapping from the numeric ID of a Repo to its fields synced with Redis by [Repos.sync_local_cache].
@@ -57,12 +94,13 @@ type Author struct {
 	Email    string `json:"email"`
 }
 
-func New(ctx context.Context, rdb *redis.Client) (*Repos, error) {
-	r := Repos{rdb, LocalCache{}, sync.RWMutex{}}
-	reposHash, err := r.rdb.HGetAll(ctx, REPOS_KEY).Result()
+func New(ctx context.Context, client Client) (*Repos, error) {
+	r := Repos{client: client, cache: LocalCache{}}
+	reposHash, err := r.client.HGetAll(ctx, REPOS_KEY).Result()
 	if err != nil {
 		return nil, err
 	}
+
 	for _, v := range reposHash {
 		var repo Repo
 		if err := json.Unmarshal([]byte(v), &repo); err != nil {
@@ -71,8 +109,8 @@ func New(ctx context.Context, rdb *redis.Client) (*Repos, error) {
 		r.cache[repo.ID] = &repo
 	}
 
-	sub := rdb.Subscribe(ctx, REPOS_UPDATES_CHANNEL)
-	if _, err := sub.Receive(ctx); err != nil {
+	sub, err := r.client.Subscribe(ctx, REPOS_UPDATES_CHANNEL)
+	if err != nil {
 		return nil, err
 	}
 
@@ -84,37 +122,54 @@ func New(ctx context.Context, rdb *redis.Client) (*Repos, error) {
 // subject to the message published.
 // During local cache reconciliation [sync.RWMutex.Lock] is called and blocks all other goroutines from
 // reading or writing to [Repos.cache].
-func (r *Repos) sync_local_cache(ctx context.Context, sub *redis.PubSub) {
+// NOTE: All [redis.Message] payloads published to [REPOS_UPDATES_CHANNEL] will only be instances of [Repo.ID]
+func (r *Repos) sync_local_cache(ctx context.Context, sub Subscription) {
 	defer sub.Close()
+	ch := sub.Channel()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case _, ok := <-sub.Channel():
+		case msg, ok := <-ch:
 			if !ok {
 				return
 			}
+			_, err := strconv.ParseInt(msg.Payload, 10, 64)
+			if err != nil {
+				continue // NOTE: this means a message published to the channel was malformed, idk how to handle this rn
+			}
+
+			repo_bytes, err := r.client.HGet(ctx, REPOS_KEY, msg.Payload).Bytes()
+			if err != nil {
+				continue
+			}
+
+			var repo Repo
+			json.Unmarshal(repo_bytes, &repo)
 			r.mu.Lock()
+			r.cache[repo.ID] = &repo
 			r.mu.Unlock()
 		}
 	}
 }
 
+// Get a subset of repos from [Repos.cache] or the entire set if no IDs are provided.
+// This function does block if [Repos.cache] is being synced with the Redis cache.
 func (r *Repos) Get(IDs ...int64) []*Repo {
 	if IDs == nil {
-		r.mu.RLock()
-		repos := make([]*Repo, len(r.cache))
+		r.mu.RLock() // NOTE: need to lock before alloc because mutation may change the number of pairs
+		repos := make([]*Repo, 0, len(r.cache))
 		for _, v := range r.cache {
 			repos = append(repos, v)
 		}
-		r.mu.Unlock()
+		r.mu.RUnlock()
 		return repos
 	}
-	repos := make([]*Repo, len(IDs))
 	r.mu.RLock()
+	repos := make([]*Repo, 0, len(IDs))
 	for _, ID := range IDs {
 		repos = append(repos, r.cache[ID])
 	}
-	r.mu.Unlock()
+	r.mu.RUnlock()
 	return repos
 }
