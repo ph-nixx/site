@@ -9,7 +9,7 @@ const DIP_DEPTH = 20; // distance units the centre of each band is pushed down (
 const DIP_WIDTH = 35; // columns; how wide the dip is
 const TAPER_START = 0.3; // fraction of grid width where the right-edge fade begins
 const TAPER_END = 0.95; // fraction of grid width where the bands are fully faded
-const RAMP = " .:-=+xX#8@";
+const RAMP = " .-=+*#&$@";
 const BAYER = [
 	[0, 8, 2, 10],
 	[12, 4, 14, 6],
