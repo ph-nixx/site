@@ -4,8 +4,8 @@ tmp_dir = "tmp"
 [build]
 cmd = "go build -o ./tmp/main ./cmd/web/"
 entrypoint = "./tmp/main"
-include_ext = ["go"]
-exclude_dir = ["tmp", "vendor", "static", "views", "docs"]
+include_ext = ["go", "html"]
+exclude_dir = ["tmp", "vendor", "static", "docs"]
 delay = 1000
 send_interrupt = false
 kill_delay = "500ms"

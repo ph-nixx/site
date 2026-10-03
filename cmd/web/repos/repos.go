@@ -99,3 +99,22 @@ func (r *Repos) sync_local_cache(ctx context.Context, sub *redis.PubSub) {
 		}
 	}
 }
+
+func (r *Repos) Get(IDs ...int64) []*Repo {
+	if IDs == nil {
+		r.mu.RLock()
+		repos := make([]*Repo, len(r.cache))
+		for _, v := range r.cache {
+			repos = append(repos, v)
+		}
+		r.mu.Unlock()
+		return repos
+	}
+	repos := make([]*Repo, len(IDs))
+	r.mu.RLock()
+	for _, ID := range IDs {
+		repos = append(repos, r.cache[ID])
+	}
+	r.mu.Unlock()
+	return repos
+}
