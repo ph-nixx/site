@@ -2,7 +2,9 @@ package main
 
 import (
 	"flag"
+	"log/slog"
 	"net/http"
+	"os"
 
 	"github.com/ph-nixx/site/cmd/web/app"
 )
@@ -10,11 +12,15 @@ import (
 func main() {
 	addr := flag.String("addr", ":8080", "HTTP network address")
 	flag.Parse()
-	a, err := app.New()
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{AddSource: true}))
+	app, err := app.New(logger)
 	if err != nil {
-		panic(err)
+		logger.Error(err.Error())
+		os.Exit(1)
 	}
-	if err := http.ListenAndServe(*addr, a.Routes()); err != nil {
-		a.Logger.Error(err.Error())
+
+	if err := http.ListenAndServe(*addr, app.Routes()); err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
 	}
 }

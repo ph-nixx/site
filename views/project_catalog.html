@@ -1,6 +1,26 @@
 {{define "project_catalog"}}
 <div class="pcatalog py-[var(--spacing-section-pad)] border-b border-border">
 	<h2 class="text-xl font-bold text-fg mb-s5">Projects</h2>
+	{{if .}}
+	{{$n := len .}}
+	<ul class="list-none grid grid-cols-12 gap-s5">
+		{{range $i, $r := .}}
+		{{$span := colSpan $n $i}}
+		{{if $span}}
+		<li class="col-span-12 {{$span}}">
+			<a href="/docs/{{$r.Name}}"
+				class="h-full flex flex-col gap-s5 p-s6 bg-[var(--color-surface-1)] border border-border rounded-[var(--radius-lg)] no-underline transition-colors duration-[var(--dur)] ease-[var(--ease-out)] hover:border-border-strong focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-bg),0_0_0_4px_var(--color-focus)]">
+				<div class="flex items-center gap-s3">
+					{{if $r.SVG}}<img src="/static/icons/{{$r.ID}}" alt="" width="20" height="20" class="w-5 h-5 shrink-0">{{end}}
+					<h3 class="text-lg font-bold text-fg">{{$r.Name}}</h3>
+				</div>
+				{{with $r.Description}}<p class="text-sm leading-[1.65] text-fg-muted">{{.}}</p>{{end}}
+			</a>
+		</li>
+		{{end}}
+		{{end}}
+	</ul>
+	{{else}}
 	<div class="pcatalog-skel">
 		<ul>
 			<li>
@@ -31,5 +51,6 @@
 			</li>
 		</ul>
 	</div>
+	{{end}}
 </div>
 {{end}}

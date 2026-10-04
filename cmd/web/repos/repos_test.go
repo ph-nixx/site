@@ -3,6 +3,8 @@ package repos
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
+	"maps"
 	"strconv"
 	"sync"
 	"testing"
@@ -19,16 +21,14 @@ type mockClient struct {
 }
 
 func newMockClient(hash map[string]string) *mockClient {
-	return &mockClient{hash: hash, sub: newmockSub()}
+	return &mockClient{hash: hash, sub: newMockSub()}
 }
 
 func (f *mockClient) HGetAll(ctx context.Context, key string) *redis.MapStringStringCmd {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := make(map[string]string, len(f.hash))
-	for k, v := range f.hash {
-		out[k] = v
-	}
+	out := map[string]string{}
+	maps.Copy(out, f.hash)
 	cmd := redis.NewMapStringStringCmd(ctx, "hgetall", key)
 	cmd.SetVal(out)
 	return cmd
@@ -47,8 +47,8 @@ func (f *mockClient) HGet(ctx context.Context, key, field string) *redis.StringC
 	return cmd
 }
 
-func (f *mockClient) Subscribe(ctx context.Context, channels ...string) (Subscription, error) {
-	return f.sub, nil
+func (f *mockClient) Subscribe(ctx context.Context, channels ...string) Subscription {
+	return f.sub
 }
 
 // set writes a repo into the mock hash, as an external writer would before publishing.
@@ -70,15 +70,22 @@ type mockSub struct {
 	closeOne sync.Once
 }
 
-func newmockSub() *mockSub {
+func newMockSub() *mockSub {
 	return &mockSub{ch: make(chan *redis.Message, 1), closed: make(chan struct{})}
 }
 
-func (s *mockSub) Publish(payload string)                                    { s.ch <- &redis.Message{Payload: payload} }
-func (s *mockSub) Channel(opts ...redis.ChannelOption) <-chan *redis.Message { return s.ch }
+func (s *mockSub) Publish(payload string) {
+	s.ch <- &redis.Message{Payload: payload}
+}
+func (s *mockSub) Channel(opts ...redis.ChannelOption) <-chan *redis.Message {
+	return s.ch
+}
 func (s *mockSub) Close() error {
 	s.closeOne.Do(func() { close(s.closed) })
 	return nil
+}
+func (s *mockSub) Receive(ctx context.Context) (any, error) {
+	return nil, nil
 }
 
 // eventually polls cond until it is true or the deadline passes.
@@ -96,7 +103,7 @@ func eventually(t *testing.T, cond func() bool, msg string) {
 
 func Test_get_returns_repo_subject_to_variadic_arg_convention(t *testing.T) {
 	c := map[int64]*Repo{1: nil, 2: nil}
-	r := Repos{cache: c}
+	r := Repos{repoCache: c}
 	result := r.Get()
 	if 2 != len(result) {
 		t.Error("expected length 2", "got", result)
@@ -108,7 +115,7 @@ func Test_get_returns_repo_subject_to_variadic_arg_convention(t *testing.T) {
 }
 
 // Calling [New] subscribes to the client's repos channel and [Repos.cache]
-// is synced when the message is published to the repos channel externally.
+// is synced when messages are published to the repos updates channel.
 func Test_new_repos_subscribes_and_syncs_local_cache(t *testing.T) {
 	client := newMockClient(map[string]string{})
 	client.set(t, Repo{ID: 1, Name: "one"})
@@ -116,7 +123,7 @@ func Test_new_repos_subscribes_and_syncs_local_cache(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	r, err := New(ctx, client)
+	r, err := New(ctx, client, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +156,7 @@ func Test_new_repos_subscribes_and_syncs_local_cache(t *testing.T) {
 	cancel()
 	select {
 	case <-client.sub.closed:
-	case <-time.After(2 * time.Second):
+	case <-time.After(1 * time.Second):
 		t.Fatal("subscription was not closed after context cancel")
 	}
 }

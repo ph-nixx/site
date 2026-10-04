@@ -19,9 +19,24 @@
 			</button>
 			<div id="nav-menu" popover="" aria-label="Menu"
 				class="m-0 p-s2 min-w-[248px] max-h-[min(60vh,420px)] overflow-auto text-fg bg-surface-2 border border-border rounded-md fixed inset-auto top-[46px] right-[max(var(--spacing-s3),calc((100vw_-_var(--container-width))/2_+_var(--spacing-s3)))] opacity-0 -translate-y-1 transition-discrete transition-[opacity,transform,overlay,display] duration-[var(--dur)] ease-[var(--ease-out)] starting:opacity-0 starting:-translate-y-1 [&:popover-open]:opacity-100 [&:popover-open]:translate-y-0">
+				{{if .}}
 				<p class="px-[10px] py-[4px] font-mono text-xs tracking-[0.08em] uppercase text-fg-subtle">Projects</p>
-				<ul class="flex flex-col gap-[1px] list-none"></ul>
+				<ul
+					class="flex flex-col gap-[1px] list-none [&:not(:has(img))_a]:grid-cols-1 [&:not(:has(img))_span]:col-start-1">
+					{{range $r := .}}
+					<li>
+						<a href="/docs/{{$r.Name}}" aria-current="false"
+							class="grid grid-cols-[16px_1fr] items-center gap-[8px] px-[10px] py-[5px] rounded-[6px] text-fg-muted text-sm no-underline transition-colors duration-[var(--dur)] ease-[var(--ease-out)] hover:bg-overlay-hover hover:text-fg focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-surface-2),0_0_0_4px_var(--color-focus)]">
+							{{if $r.SVG}}<img src="/static/icons/{{$r.ID}}" alt="" width="15" height="15"
+								class="col-start-1 w-[15px] h-[15px]">{{end}}
+							<span
+								class="col-start-2 min-w-0 overflow-hidden whitespace-nowrap text-ellipsis">{{$r.Name}}</span>
+						</a>
+					</li>
+					{{end}}
+				</ul>
 				<hr class="h-[2px] my-s2 mx-[6px] border-0 bg-border" />
+				{{end}}
 				<ul class="flex flex-col gap-[1px] list-none">
 					<li>
 						<a href="mailto:pmiller0706@gmail.com" aria-current="false"
