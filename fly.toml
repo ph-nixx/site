@@ -7,8 +7,6 @@ app = 'personal-site-serene-haze-831'
 primary_region = 'dfw'
 
 [build]
-[env]
-  LEPTOS_SITE_ADDR = '0.0.0.0:8080'
 
 [http_service]
   internal_port = 8080

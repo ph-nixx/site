@@ -1,6 +1,8 @@
-* Feature Name: (fill me in with a unique ident, `my_awesome_feature`)
-* Start Date: (fill me in with today's date, YYYY-MM-DD)
-* Status: open | implemented
+---
+feature_name: (fill me in with a unique ident, `my_awesome_feature`)
+start_date: (fill me in with today's date, YYYY-MM-DD)
+status: open | implemented
+---
 
 ## Summary
 [summary]: #summary
