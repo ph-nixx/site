@@ -26,7 +26,7 @@ type App struct {
 // funcMap exposes helpers to the HTML templates.
 var funcMap = template.FuncMap{"colSpan": colSpan}
 
-func New(logger *slog.Logger) (*App, error) {
+func New(ctx context.Context, logger *slog.Logger) (*App, error) {
 	tmpl, err := template.New("").Funcs(funcMap).ParseGlob("./views/*.html")
 	if err != nil {
 		return nil, err
@@ -42,7 +42,6 @@ func New(logger *slog.Logger) (*App, error) {
 		return nil, err
 	}
 
-	ctx := context.Background()
 	r, err := repos.New(ctx, repos.FromRedisClient(redis.NewClient(opts)), logger)
 	if err != nil {
 		return nil, err

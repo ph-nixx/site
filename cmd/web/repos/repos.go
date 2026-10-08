@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,12 +21,15 @@ const (
 	// When the state of any repo is changed in Redis, a message describing the change
 	// is published to this channel.
 	REPOS_UPDATES_CHANNEL = "repos:updates"
+
+	REPOS_UPDATE_PREFIX   = "repos"
+	COMMITS_UPDATE_PREFIX = "commits"
 )
 
 type Repos struct {
 	client      Client
 	repoCache   RepoCache
-	commitCache CommitCache
+	commitCache []ConventionalCommit
 	mu          sync.RWMutex
 	logger      *slog.Logger
 }
@@ -33,14 +37,12 @@ type Repos struct {
 // A mapping from the numeric ID of a Repo to its fields synced with Redis by [Repos.sync_local_cache].
 type RepoCache = map[int64]*Repo
 
-// The n most chronologically recent [Commit] in Redis.
-type CommitCache = []Commit
-
 // The subset of [redis.Client] functionality that Repos needs.
 type Client interface {
 	HGetAll(ctx context.Context, key string) *redis.MapStringStringCmd
 	HGet(ctx context.Context, key, field string) *redis.StringCmd
 	Subscribe(ctx context.Context, channels ...string) Subscription
+	ZRangeArgs(ctx context.Context, z redis.ZRangeArgs) *redis.StringSliceCmd
 }
 
 type Subscription interface {
@@ -60,47 +62,48 @@ func FromRedisClient(rdb *redis.Client) Client {
 	return &redisClient{Client: rdb}
 }
 
-// Subscribe shadows the embedded client's Subscribe, which returns *redis.PubSub,
-// so the result can be returned as a Subscription.
-func (c *redisClient) Subscribe(ctx context.Context, channels ...string) Subscription {
-	return c.Client.Subscribe(ctx, channels...)
+func (r *redisClient) Subscribe(ctx context.Context, channels ...string) Subscription {
+	return r.Client.Subscribe(ctx, channels...)
 }
 
-// Repo is a repository as returned by the GitHub REST API.
+func (r *redisClient) ZRangeArgs(ctx context.Context, z redis.ZRangeArgs) *redis.StringSliceCmd {
+	return r.Client.ZRangeArgs(ctx, z)
+}
+
+// A representation of a Git repo that is intended to be displayed as a project.
+// NOTE: data modeling is not done
 type Repo struct {
-	ID            int64  `json:"id"`
-	SVG           string `json:"svg"`
-	Name          string `json:"name"`
-	FullName      string `json:"full_name"`
-	Description   string `json:"description"`
-	Language      string `json:"language"`
-	DefaultBranch string `json:"default_branch"`
-	HeadCommit    Commit `json:"head_commit"`
+	ID          int64     `json:"id"`
+	SVG         string    `json:"svg"`
+	Name        string    `json:"name"`
+	FullName    string    `json:"full_name"`
+	Description string    `json:"description"`
+	LastCommit  time.Time `json:"last_commit"`
 }
 
-// Commit is a single pushed commit as reported by a GitHub push event.
-type Commit struct {
+// A representation of a Git commit that conforms to the
+// [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/O) standard.
+// NOTE: data modeling is not done
+type ConventionalCommit struct {
 	ID        string    `json:"id"`
 	RepoName  string    `json:"repo_name"`
 	Timestamp time.Time `json:"timestamp"`
-	Author    Author    `json:"author"`
-	Distinct  bool      `json:"distinct"`
-	Message   string    `json:"message"`
-	Added     []string  `json:"added"`
-	Modified  []string  `json:"modified"`
-	Removed   []string  `json:"removed"`
-}
 
-type Author struct {
-	Username string `json:"username"`
-	Email    string `json:"email"`
+	// <[ConventionalCommit.Type]>(optional [ConventionalCommit.Scope]): <[ConventionalCommit.Description]>
+	//
+	// [ConventionalCommit.Body]
+
+	Type        string `json:"type"`
+	Scope       string `json:"scope"`
+	Description string `json:"description"`
+	Body        string `json:"body"`
 }
 
 func New(ctx context.Context, client Client, logger *slog.Logger) (*Repos, error) {
 	r := Repos{
 		client:      client,
 		repoCache:   RepoCache{},
-		commitCache: CommitCache{},
+		commitCache: []ConventionalCommit{},
 		logger:      logger.With("package", "repos"),
 	}
 	reposHash, err := r.client.HGetAll(ctx, REPOS_KEY).Result()
@@ -115,22 +118,48 @@ func New(ctx context.Context, client Client, logger *slog.Logger) (*Repos, error
 		}
 		r.repoCache[repo.ID] = &repo
 	}
+	r.commitCache, err = r.fetchCommits(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	sub := client.Subscribe(ctx, REPOS_UPDATES_CHANNEL)
 	if _, err := sub.Receive(ctx); err != nil {
 		sub.Close()
 		return nil, err
 	}
 
-	go r.sync_local_cache(ctx, sub)
+	go r.syncLocalCache(ctx, sub)
 	return &r, nil
+}
+
+// fetchCommits loads the aggregated commit history from Redis in newest to oldest order,
+// skipping entries that fail to decode.
+func (r *Repos) fetchCommits(ctx context.Context) ([]ConventionalCommit, error) {
+	args := redis.ZRangeArgs{Key: COMMITS_UPDATE_PREFIX, Start: 0, Stop: -1, Rev: true}
+	jsonCommits, err := r.client.ZRangeArgs(ctx, args).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	commits := make([]ConventionalCommit, 0, len(jsonCommits))
+	for _, val := range jsonCommits {
+		var c ConventionalCommit
+		if err := json.Unmarshal([]byte(val), &c); err != nil {
+			r.logger.Warn("failed to Unmarshal fetched commit JSON string", "content", val, "err", err)
+			continue
+		}
+		commits = append(commits, c)
+	}
+	return commits, nil
 }
 
 // Blocks and listens for updates pushed on [REPOS_UPDATES_CHANNEL], and mutates [Repos.repoCache]
 // subject to the message published.
 // During local cache reconciliation [sync.RWMutex.Lock] is called and blocks all other goroutines from
 // reading or writing to [Repos.repoCache].
-// NOTE: All [redis.Message] payloads published to [REPOS_UPDATES_CHANNEL] will only be instances of [Repo.ID]
-func (r *Repos) sync_local_cache(ctx context.Context, sub Subscription) {
+// NOTE: [redis.Message.Payload] format is assumed to be UPDATE_TYPE | UPDATE_TYPE:[Repo.ID]
+func (r *Repos) syncLocalCache(ctx context.Context, sub Subscription) {
 	defer sub.Close()
 	for {
 		select {
@@ -141,26 +170,45 @@ func (r *Repos) sync_local_cache(ctx context.Context, sub Subscription) {
 				return
 			}
 
-			_, err := strconv.ParseInt(msg.Payload, 10, 64)
-			if err != nil {
-				r.logger.Warn("malformed repo ID published to updates channel", "payload", msg.Payload, "err", err)
-				continue
-			}
+			if strings.HasPrefix(msg.Payload, REPOS_UPDATE_PREFIX) {
+				_, repoID, ok := strings.Cut(msg.Payload, ":")
+				if !ok {
+					r.logger.Warn("malformed repo update message published to updates channel", "payload", msg.Payload)
+					continue
+				}
 
-			repo_bytes, err := r.client.HGet(ctx, REPOS_KEY, msg.Payload).Bytes()
-			if err != nil {
-				r.logger.Warn("failed to fetch repo from Redis", "id", msg.Payload, "err", err)
-				continue
-			}
+				_, err := strconv.ParseInt(repoID, 10, 64)
+				if err != nil {
+					r.logger.Warn("malformed repo ID published to updates channel", "payload", msg.Payload, "err", err)
+					continue
+				}
 
-			var repo Repo
-			if err := json.Unmarshal(repo_bytes, &repo); err != nil {
-				r.logger.Warn("invalid repo JSON in Redis", "id", msg.Payload, "err", err)
-				continue
+				repo_bytes, err := r.client.HGet(ctx, REPOS_KEY, repoID).Bytes()
+				if err != nil {
+					r.logger.Warn("failed to fetch repo from Redis", "id", repoID, "err", err)
+					continue
+				}
+
+				var repo Repo
+				if err := json.Unmarshal(repo_bytes, &repo); err != nil {
+					r.logger.Warn("invalid repo JSON in Redis", "id", repoID, "err", err)
+					continue
+				}
+
+				r.mu.Lock()
+				r.repoCache[repo.ID] = &repo
+				r.mu.Unlock()
+			} else if msg.Payload == COMMITS_UPDATE_PREFIX {
+				commits, err := r.fetchCommits(ctx)
+				if err != nil {
+					r.logger.Warn("failed to fetch commits from Redis", "payload", msg.Payload, "err", err)
+					continue
+				}
+
+				r.mu.Lock()
+				r.commitCache = commits
+				r.mu.Unlock()
 			}
-			r.mu.Lock()
-			r.repoCache[repo.ID] = &repo
-			r.mu.Unlock()
 		}
 	}
 }
@@ -193,8 +241,8 @@ func (r *Repos) Get(IDs ...int64) []*Repo {
 	return repos
 }
 
-// Get the aggregated commit log from the set of repos in chronological order.
-func (r *Repos) Commits() []Commit {
+// Yields the aggregated commits from the set of repos in newest to oldest order.
+func (r *Repos) Commits() []ConventionalCommit {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.commitCache

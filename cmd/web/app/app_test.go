@@ -14,20 +14,25 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// stubClient is a repos.Client backed by a fixed hash whose subscription never delivers.
-type stubClient struct {
+// mockClient is an in-memory repos.Client with a fixed hash and no commits,
+// whose subscription never delivers.
+type mockClient struct {
 	hash map[string]string
 }
 
-func (c stubClient) HGetAll(ctx context.Context, key string) *redis.MapStringStringCmd {
+func newMockClient(hash map[string]string) *mockClient {
+	return &mockClient{hash: hash}
+}
+
+func (f *mockClient) HGetAll(ctx context.Context, key string) *redis.MapStringStringCmd {
 	cmd := redis.NewMapStringStringCmd(ctx, "hgetall", key)
-	cmd.SetVal(c.hash)
+	cmd.SetVal(f.hash)
 	return cmd
 }
 
-func (c stubClient) HGet(ctx context.Context, key, field string) *redis.StringCmd {
+func (f *mockClient) HGet(ctx context.Context, key, field string) *redis.StringCmd {
 	cmd := redis.NewStringCmd(ctx, "hget", key, field)
-	if v, ok := c.hash[field]; ok {
+	if v, ok := f.hash[field]; ok {
 		cmd.SetVal(v)
 	} else {
 		cmd.SetErr(redis.Nil)
@@ -35,15 +40,22 @@ func (c stubClient) HGet(ctx context.Context, key, field string) *redis.StringCm
 	return cmd
 }
 
-func (c stubClient) Subscribe(ctx context.Context, channels ...string) repos.Subscription {
-	return stubSub{}
+func (f *mockClient) Subscribe(ctx context.Context, channels ...string) repos.Subscription {
+	return &mockSub{}
 }
 
-type stubSub struct{}
+func (f *mockClient) ZRangeArgs(ctx context.Context, z redis.ZRangeArgs) *redis.StringSliceCmd {
+	cmd := redis.NewStringSliceCmd(ctx, "zrange", z.Key)
+	cmd.SetVal([]string{})
+	return cmd
+}
 
-func (stubSub) Channel(opts ...redis.ChannelOption) <-chan *redis.Message { return nil }
-func (stubSub) Close() error                                              { return nil }
-func (stubSub) Receive(ctx context.Context) (any, error)                  { return nil, nil }
+// mockSub is a repos.Subscription that never delivers a message.
+type mockSub struct{}
+
+func (s *mockSub) Channel(opts ...redis.ChannelOption) <-chan *redis.Message { return nil }
+func (s *mockSub) Close() error                                              { return nil }
+func (s *mockSub) Receive(ctx context.Context) (any, error)                  { return nil, nil }
 
 func TestIcon(t *testing.T) {
 	const svg = `<svg xmlns="http://www.w3.org/2000/svg"></svg>`
@@ -59,7 +71,7 @@ func TestIcon(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	discard := slog.New(slog.DiscardHandler)
-	r, err := repos.New(ctx, stubClient{hash}, discard)
+	r, err := repos.New(ctx, newMockClient(hash), discard)
 	if err != nil {
 		t.Fatal(err)
 	}
