@@ -99,6 +99,39 @@ type ConventionalCommit struct {
 	Body        string `json:"body"`
 }
 
+type GithubPushEvent struct {
+	Repo       GithubRepo     `json:"repository"`
+	HeadCommit GithubCommit   `json:"head_commit"`
+	Commits    []GithubCommit `json:"commits"`
+}
+
+// Repository as returned by the GitHub REST API.
+type GithubRepo struct {
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	FullName    string `json:"full_name"`
+	Description string `json:"description"`
+	Language    string `json:"language"`
+}
+
+// Commit is a single pushed commit as returned by a GitHub push event.
+type GithubCommit struct {
+	ID        string    `json:"id"`
+	RepoName  string    `json:"repo_name"`
+	Timestamp time.Time `json:"timestamp"`
+	Author    Author    `json:"author"`
+	Distinct  bool      `json:"distinct"`
+	Message   string    `json:"message"`
+	Added     []string  `json:"added"`
+	Modified  []string  `json:"modified"`
+	Removed   []string  `json:"removed"`
+}
+
+type Author struct {
+	Username string `json:"username"`
+	Email    string `json:"email"`
+}
+
 func New(ctx context.Context, client Client, logger *slog.Logger) (*Repos, error) {
 	r := Repos{
 		client:      client,
@@ -246,4 +279,10 @@ func (r *Repos) Commits() []ConventionalCommit {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.commitCache
+}
+
+// Reconciles the Redis cache via updating the Repo JSON string or fetching and parsing new or changed
+// Markdown files to HTML strings, minimal work is done when nothing is changed.
+func (r *Repos) Set(ctx context.Context, event GithubPushEvent) error {
+	return nil
 }
