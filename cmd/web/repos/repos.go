@@ -284,5 +284,9 @@ func (r *Repos) Commits() []ConventionalCommit {
 // Reconciles the Redis cache via updating the Repo JSON string or fetching and parsing new or changed
 // Markdown files to HTML strings, minimal work is done when nothing is changed.
 func (r *Repos) Set(ctx context.Context, event GithubPushEvent) error {
+	// fetch the `docs/config.yml`
+
+	// ensure the event commits are sorted by timestamp in high to low order
+
 	return nil
 }
