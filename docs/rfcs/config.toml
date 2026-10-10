@@ -1,0 +1,20 @@
+# the config.toml file must exist for the project to be eligable,
+# config.toml can be empty and still project can still be eligable because everything will assume its default value
+
+[project] # optional, slug only required
+name = "Name" # optional, defaults to name of the repo with first character capitialized
+path = "x/y.md" # optional, assumed relative to the root of the project and must end with .md, defaults to README.md
+svg = '<svg></svg>' # optional
+
+[project-chapter-beta] # optional, slug only required
+title = "Project Chapter Beta" # optional, defaults to the space seperated table name with the first character capitialized e.g. "Project chapter beta"
+segment = "a" # optional, defaults to table name e.g. "project-chapter-beta"
+
+[project-chapter-beta.section-a] # optional, slug only required
+path = "x/y/z.md" # required, assumed relative to docs directory at the root of the project, must end with .md
+segment = "b" # optional, defaults to sub table name e.g. "section-a"
+name = "Section A (updated)" # optional, defaults to space seperated sub table name with first character capitialized
+							 # e.g. "Section a"
+
+# nesting can only go upto a depth of 3 then everything else is ignored
+[project-chapter-beta.section-a.section-b]
