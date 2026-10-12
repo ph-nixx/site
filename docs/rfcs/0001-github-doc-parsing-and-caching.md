@@ -260,8 +260,7 @@ title = "Section B" # optional, defaults to the table name with dashes turned in
 ```
 
 A slug matches `^[a-z0-9]+(-[a-z0-9]+)*$`.
-Depth is counted from the chapter: chapter is 1, section is 2, subsection is 3.
-
+Depth is counted from the chapter: chapter is 1, section is 2, subsection is 3. 
 Validation happens at two levels.
 **File level** errors fail the whole push early (see [Validation](#validation)):
 
@@ -513,18 +512,17 @@ Once validation passes, phase one and phase two start concurrently.
 
 ```go
 // Parses docs.toml, applying defaults and recording nodes with node level errors, each with a logged warning.
-func ParseDocsConfig(data []byte, repoName string, logger *slog.Logger) (DocsConfig, error)
+func ParseDocsConfig(data []byte, repoName string) (DocsConfig, error)
 
-// Reports whether the project file exists, making a request only when the comparison cannot answer.
-func (r *Repos) projectFileExists(ctx context.Context, cached *Repo, cfg DocsConfig, changes ChangedFiles, sha string) (bool, error)
+// Reports whether the project path exists, making a request only when the comparison cannot answer.
+func (r *Repos) pathExists(ctx context.Context, cached *Repo, cfg DocsConfig, changes ChangedFiles, sha string) (bool, error)
 ```
 
 #### Phase one: docs
 
-1. Collect the referenced paths of the cached tree (`before`) and of the parsed tree's nodes without a parse time
-   error (`now`): every non empty `DocSection.Path` plus `ProjectPath`.
+1. Collect the referenced paths of the cached tree `before` and of the parsed tree's nodes without a parse time error `now`, every non empty `DocSection.Path` plus `ProjectPath`.
 2. Classify:
-	- **new**: in `now`, not in `before`;
+	- **new**: in `now`, not in `before`.
 	- **outdated**: in both, and in `ChangedFiles.Touched` (every path in both when `ChangedFiles.Full`), plus every path under a node 
 	  that was `Frozen` at the last ingest and has no parse time error now.
 
@@ -539,11 +537,9 @@ func (r *Repos) projectFileExists(ctx context.Context, cached *Repo, cfg DocsCon
    descendants as well as files a node no longer points to.
 7. Build the new `Repo`: GitHub metadata from the event, settings from `DocsConfig`, the effective `DocSections`,
    `LastCommit` from `HeadCommit`, and `LastIngestedSHA` set to `event.After`.
-8. Run the [commit script](#commit-script) with expected SHA `S`.
+8. Run the [[0001-github-doc-parsing-and-caching#Commit script|commit script]] with expected SHA `S`.
 	* It returns 1: done.
-	* It returns 0: another push committed first. Restart from the initial step with the new `S`, up to 3 times;
-     the restarted comparison either reports `behind` or `identical` and stops, or covers only the remaining gap.
-     Exhausting the retries is a failure.
+	* It returns 0: another push committed first. Restart from the initial step with the new `S`, up to 3 times the restarted comparison either reports `behind` or `identical` and stops, or covers only the remaining gap. Exhausting the retries is a failure.
 
 9. Any error (a non 404 fetch failure, a rendering error, a Redis error, a timeout) is a failure: nothing is written and
    the next push retries the work from `S`.
@@ -585,10 +581,10 @@ again and re-adds the same commits, which leaves the sorted set unchanged.
 
 ```go
 // Parses a commit into a ConventionalCommit; ok is false when the message does not strictly conform.
-func ParseConventionalCommit(repo GithubRepo, sha, message string, committed time.Time) (c ConventionalCommit, ok bool)
+func (g *GithubCommit) IntoConventionalCommit() (ConventionalCommit, bool)
 
 // Adds commits to the commit log and prunes entries older than 90 days.
-func (r *Repos) logCommits(ctx context.Context, commits []ConventionalCommit) error
+func (r *Repos) SetCommits(ctx context.Context, commits []ConventionalCommit) error
 ```
 
 ### Lua scripts
@@ -620,10 +616,10 @@ Scanning `commits` is linear in its size, which the 90 day prune keeps small.
 
 ```go
 // Runs the commit script; ok is false when Repo.LastIngestedSHA no longer equals expected.
-func (r *Repos) commitDocs(ctx context.Context, repo Repo, expected string, html map[string]string, old []string) (ok bool, err error)
+func (r *Repos) commitDocs(ctx context.Context, repo Repo, expected string, html map[string]string, old []string) (bool, error)
 
-// Runs the deep clean script; ok is false when Repo.LastIngestedSHA no longer equals expected.
-func (r *Repos) deepClean(ctx context.Context, repoID int64, expected string) (ok bool, err error)
+// Runs the deep clean script; ok is false when Repo.LastIngestedSHA no longer equals expectedSHA.
+func (r *Repos) RemoveRepo(ctx context.Context, repoID int64, expectedSHA string) (bool, error)
 ```
 
 `Client` grows to cover `EvalSha`, `ZAdd`, `ZRemRangeByScore`, and `Publish`.
@@ -647,11 +643,10 @@ Pages are served at `/{repo name}/{table.segment}/{table.table.segment}/{table.t
 4. `HGET {Repo.ID}:docs {path}` and serve the HTML.
 
 ```go
-// Resolves a page URL to the repo ID and file path whose HTML should be served; ok is false when no page matches.
-func (r *Repos) Page(repoName string, segments []string) (repoID int64, path string, ok bool)
-
-// Fetches the cached HTML for a repo's file.
-func (r *Repos) HTML(ctx context.Context, repoID int64, path string) (string, error)
+// Resolves a page URL to the repo ID and file path whose HTML should be served, then
+// fetches the cached HTML for a repo's file.
+// If the path does not have an associated cached markdown file path a UnknownPath error will be returned.
+func (r *Repos) Doc(ctx context.Context, path string) (string, error)
 ```
 
 Repo renames arrive as a separate `repository` webhook event, which this RFC does not handle, so until the next push the
