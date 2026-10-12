@@ -33,6 +33,8 @@ Once both requests return, the push is validated before either phase starts:
 
 `docs.toml` is the single source of truth for the repo's docs structure; it is parsed into `[]DocSection`,
 a recursive type (`DocSection.SubSections []DocSection`) at most three levels deep (chapter, section, subsection).
+Siblings keep the order in which their tables appear in `docs.toml`: chapters in `Repo.DocSections`, and the children
+of each node in its `DocSection.SubSections`.
 A repo is eligible only if `docs.toml` exists at the repo root (it may be empty) and its project file exists.
 The project file is `[project].path` when it is set, otherwise `README.md`; an explicitly set `[project].path` never falls back to `README.md`.
 Every `path` in `docs.toml` is relative to the repo root, so doc files can live anywhere in the repo.
@@ -115,6 +117,7 @@ Once that file exists, every push to the default branch keeps the site's copy of
   and the first character capitalized.
 
 Every table name must be a slug, e.g. `getting-started`, and `[project]` is reserved for the project page.
+The sidebar lists chapters, and the sections under each, in the order their tables appear in `docs.toml`.
 
 ### Example
 
@@ -190,6 +193,8 @@ The site only does work for what a push actually changed. Continuing the example
 * You edit `docs/install/linux.md`. Only the Linux page is fetched and re-rendered; every other page is left alone.
 * You change `title = "macOS"` to `title = "MacOS"`. The sidebar updates, but no Markdown is fetched,
   because no referenced file changed.
+* You move the `[guides]` tables above `[install]`. The sidebar now lists Guides before Installation, and again
+  no Markdown is fetched.
 * You add `[guides.caching]` pointing to a new `docs/guides/caching.md`. That one file is fetched and rendered. 
 * You delete the `[guides.database]` table. Both the Database and Pooling pages disappear,
   since removing a table removes everything nested under it. Removing a table is the only way to remove a page.
@@ -261,6 +266,13 @@ title = "Section B" # optional, defaults to the table name with dashes turned in
 
 A slug matches `^[a-z0-9]+(-[a-z0-9]+)*$`.
 Depth is counted from the chapter: chapter is 1, section is 2, subsection is 3. 
+Order is significant: chapters keep the order in which their tables appear in the file, and the children of every
+node keep the order in which their own tables appear, whatever is written between them.
+A table's position is where its key path first appears, in its own header or in a descendant's header
+(e.g. `[guides.database]` written before any `[guides]` header places `guides` there).
+`[project]` is not a chapter and has no position.
+Decoding into a Go map loses this order, so `ParseDocsConfig` must read it from the document itself
+(e.g. the key order reported by the TOML decoder's metadata).
 Validation happens at two levels.
 **File level** errors fail the whole push early (see [Validation](#validation)):
 
@@ -298,12 +310,28 @@ Renaming a table therefore removes one node and adds another.
   In addition, every path in the new subtree is treated as **outdated**. Other pushes kept succeeding while it was
   frozen, so `Repo.LastIngestedSHA` has moved past any edits made to its files, and the comparison alone would miss them.
 
+The one thing `docs.toml` still decides for a frozen node is its position: it stays where its table now appears among
+its siblings, while the order inside its subtree is the cached one until it unfreezes. A skipped node leaves no gap.
+Reordering tables touches no path, so it only rewrites the `Repo` JSON.
+
 ### Data model
 
-`Repo` gains the fields that describe the docs; `ConventionalCommit` gains `RepoID` so a deep clean can find a repo's
+`Repo` gains the fields that describe the docs, plus two fields derived from them when a repo is loaded into the
+local cache and never stored; `ConventionalCommit` gains `RepoID` so a deep clean can find a repo's
 commits even after the repo is renamed.
 
 ```go
+// The local cache of every repo and the commit log, synced with Redis by syncLocalCache.
+type Repos struct {
+	client      Client               // Redis
+	github      *Github              // new: GitHub REST API client used by ingestion
+	sidebar     *template.Template   // new: renders Repo.Sidebar in NewRepo
+	repoCache   map[int64]*Repo      // Repo.ID -> repo
+	names       map[string]int64     // new: Repo.Name -> Repo.ID, used only to resolve the first URL segment
+	commitCache []ConventionalCommit // newest to oldest
+	mu          sync.RWMutex         // guards repoCache, names, and commitCache, which are updated together
+}
+
 // A Git repo displayed as a project, stored as a JSON string in the `repos` hash.
 type Repo struct {
 	ID              int64        `json:"id"`                // immutable GitHub repo ID
@@ -313,19 +341,22 @@ type Repo struct {
 	Description     string       `json:"description"`       // GitHub repo description
 	SVG             string       `json:"svg"`               // [project].svg
 	ProjectPath     string       `json:"project_path"`      // [project].path, or README.md
-	DocSections     []DocSection `json:"doc_sections"`      // chapters as served: invalid nodes frozen or skipped
+	DocSections     []DocSection `json:"doc_sections"`      // chapters as served, in docs.toml order: invalid nodes frozen or skipped
 	LastCommit      time.Time    `json:"last_commit"`       // timestamp of the push's head commit
 	LastIngestedSHA string       `json:"last_ingested_sha"` // last commit whose docs were fully ingested
+
+	// Derived by the local cache on load, never written to Redis.
+	DocRoutes map[string]string `json:"-"` // stacked segments to file path, e.g. "install/linux" -> "docs/install/linux.md"; "" -> ProjectPath
+	Sidebar   template.HTML     `json:"-"` // sidebar markup rendered from DocSections by the sidebar template
 }
 
 // A chapter, section, or subsection parsed from docs.toml.
 type DocSection struct {
-	Table       string       `json:"table"`            // table name; the chain of table names is the node's identity
 	Frozen      bool         `json:"frozen,omitempty"` // kept from the last ingest because the node is currently invalid
 	Segment     string       `json:"segment"`          // this node's URL segment, without its ancestors
 	Title       string       `json:"title"`            // sidebar text
 	Path        string       `json:"path"`             // repo root relative file path; empty for a heading only chapter
-	SubSections []DocSection `json:"sub_sections"`     // children, at most depth 3 in total
+	SubSections []DocSection `json:"sub_sections"`     // children in docs.toml order, at most depth 3 in total
 }
 
 // A Git commit that conforms to the Conventional Commits standard.
@@ -403,9 +434,8 @@ Intermediate values passed between steps:
 type DocsConfig struct {
 	Title          string
 	SVG            string
-	ProjectPath    string
-	ProjectPathSet bool                // true when [project].path was written explicitly, so README.md is never a fallback
-	Sections       []DocSection        // every table up to depth 3, valid or not
+	Path           string // [project].path, or README.md when it is not set; its existence is checked by projectPathExists
+	Sections       []DocSection        // every table up to depth 3, valid or not, in docs.toml order
 	Invalid        map[string]struct{} // key paths of nodes with a parse time node level error
 }
 
@@ -418,9 +448,8 @@ type ChangedFiles struct {
 
 // The classification of every referenced path for one push.
 type PathSets struct {
-	New      []string
-	Outdated []string
-	Old      []string
+	Touched []string // the union of new and updated files, contains all pages when comparison cannot be trusted and every referenced path is refetched
+	Removed []string
 }
 ```
 
@@ -511,11 +540,11 @@ cached docs and commits until a later push passes validation and catches up from
 Once validation passes, phase one and phase two start concurrently.
 
 ```go
-// Parses docs.toml, applying defaults and recording nodes with node level errors, each with a logged warning.
+// Parses docs.toml in table order, applying defaults and recording nodes with node level errors, each with a logged warning.
 func ParseDocsConfig(data []byte, repoName string) (DocsConfig, error)
 
 // Reports whether the project path exists, making a request only when the comparison cannot answer.
-func (r *Repos) pathExists(ctx context.Context, cached *Repo, cfg DocsConfig, changes ChangedFiles, sha string) (bool, error)
+func (r *Repos) projectPathExists(ctx context.Context, cached *Repo, cfg DocsConfig, changes ChangedFiles, sha string) (bool, error)
 ```
 
 #### Phase one: docs
@@ -531,8 +560,9 @@ func (r *Repos) pathExists(ctx context.Context, cached *Repo, cfg DocsConfig, ch
    invalid wastes a request but keeps the fetch to one round trip.
 4. A path is missing if its fetch returned 404, or if it is **unchanged** and in `ChangedFiles.Removed`.
    A node is invalid if it has a parse time error or a missing path.
-5. Build the effective tree from the parsed tree: replace every invalid node with its frozen cached subtree, or skip it
-   when it has no cached counterpart. Discard any HTML fetched for paths inside frozen or skipped subtrees.
+5. Build the effective tree from the parsed tree, keeping its order: replace every invalid node in place with its frozen
+   cached subtree, or skip it when it has no cached counterpart. Discard any HTML fetched for paths inside frozen or
+   skipped subtrees.
 6. **old** is every path in `before` that is not in the effective tree, which covers removed tables and their
    descendants as well as files a node no longer points to.
 7. Build the new `Repo`: GitHub metadata from the event, settings from `DocsConfig`, the effective `DocSections`,
@@ -560,7 +590,7 @@ func (r *Repos) renderAll(ctx context.Context, fullName, sha string, paths []str
 // Returns the key paths of every node with a parse time error or a missing path.
 func invalidNodes(parsed []DocSection, parseInvalid, missing map[string]struct{}) map[string]struct{}
 
-// Builds the tree to cache: each invalid node is replaced by its cached subtree marked Frozen, or skipped if never ingested.
+// Builds the tree to cache in parsed order: each invalid node is replaced in place by its cached subtree marked Frozen, or skipped if never ingested.
 func freezeInvalid(parsed, cached []DocSection, invalid map[string]struct{}) []DocSection
 
 // Renders Markdown into an HTML string.
@@ -619,7 +649,7 @@ Scanning `commits` is linear in its size, which the 90 day prune keeps small.
 func (r *Repos) commitDocs(ctx context.Context, repo Repo, expected string, html map[string]string, old []string) (bool, error)
 
 // Runs the deep clean script; ok is false when Repo.LastIngestedSHA no longer equals expectedSHA.
-func (r *Repos) RemoveRepo(ctx context.Context, repoID int64, expectedSHA string) (bool, error)
+func (r *Repos) dropCached(ctx context.Context, repoID int64, expectedSHA string) (bool, error)
 ```
 
 `Client` grows to cover `EvalSha`, `ZAdd`, `ZRemRangeByScore`, and `Publish`.
@@ -627,26 +657,50 @@ func (r *Repos) RemoveRepo(ctx context.Context, repoID int64, expectedSHA string
 ### Local cache and serving pages
 
 `syncLocalCache` already reloads a repo on `repos:{Repo.ID}`.
-It changes in two ways:
+The local cache keeps two maps, updated together under the same lock: `map[int64]*Repo` from `Repo.ID` to the repo,
+matching how Redis keys, pub/sub messages, and commits identify a repo, and `map[string]int64` from `Repo.Name` to
+`Repo.ID`, used only to resolve the first URL segment. `syncLocalCache` changes in three ways:
 
-* when `HGET repos {Repo.ID}` finds nothing (a deep clean), the repo is removed from the cache instead of logging a warning;
-* it maintains a second map from `Repo.Name` to `Repo.ID`, updated on every reload, so a rename takes effect as soon as the
-  next successful push rewrites the `Repo` JSON. Old names stop resolving; cached HTML is untouched because it is keyed by ID.
+* when `HGET repos {Repo.ID}` finds nothing (a deep clean), the repo and its name are removed from the cache instead of
+  logging a warning;
+* every reloaded repo gets its `DocRoutes` and `Sidebar` derived before it is stored, under the same lock, so a request
+  never sees a tree, doc routes, and sidebar from different pushes;
+* a reloaded repo replaces the entry with the same `Repo.ID`; if its name changed, the old name is read from the
+  replaced entry and removed from the name map, so a rename takes effect as soon as the next successful push rewrites
+  the `Repo` JSON. Old names stop resolving; cached HTML is untouched because it is keyed by ID.
+
+`DocRoutes` and `Sidebar` are derived per instance rather than stored, because they cost microseconds to compute from
+`DocSections`, while storing them would duplicate the tree in Redis and leave markup from an old deploy in place until
+each repo's next push. Redis holds only what is expensive to get: the rendered Markdown, which costs GitHub requests.
+The sidebar is rendered once per reload with an `html/template`, which escapes titles from `docs.toml`.
+Each link carries its route (e.g. `data-route="install/linux"`) so the page can mark the current entry on the client.
 
 Pages are served at `/{repo name}/{table.segment}/{table.table.segment}/{table.table.table.segment}`:
 
-1. Resolve the repo name to a `Repo` through the name map. An unknown name is a 404.
-2. With no further segments, serve the project page: `ProjectPath`.
-3. Otherwise walk `Repo.DocSections`, matching one segment per level.
-   If the walk does not end on a node with a non empty `Path` (no such segment, a heading only chapter, or too many
-   segments), redirect to `/{repo name}`.
-4. `HGET {Repo.ID}:docs {path}` and serve the HTML.
+1. Look up the first segment in the name map, then the `Repo` by ID. An unknown name is a 404.
+2. Look up the remaining segments, joined with `/`, in `Repo.DocRoutes`; no segments is `""`, the project page.
+   A miss (no such segment, a heading only chapter, or too many segments) redirects to `/{repo name}`.
+3. `HGET {Repo.ID}:docs {path}` and serve the HTML alongside `Repo.Sidebar`.
 
 ```go
-// Resolves a page URL to the repo ID and file path whose HTML should be served, then
-// fetches the cached HTML for a repo's file.
-// If the path does not have an associated cached markdown file path a UnknownPath error will be returned.
-func (r *Repos) Doc(ctx context.Context, path string) (string, error)
+var (
+	ErrUnknownRepo = errors.New("unknown repo") // respond 404
+	ErrUnknownPath = errors.New("unknown path") // redirect to /{repo name}
+)
+
+// Builds a cache ready repo from its stored JSON: decodes it, maps every node with a non empty Path (plus the project
+// page under "") to its file path keyed by stacked segments in DocRoutes, and renders Sidebar with the sidebar template.
+func NewRepo(data []byte, sidebar *template.Template) (*Repo, error)
+
+// Stores a derived repo in the local cache by ID and maps its name to that ID, removing its old name if it was renamed.
+func (r *Repos) swap(repo *Repo)
+
+// Removes the repo with the given ID, and its name, from the local cache.
+func (r *Repos) dropLocal(repoID int64)
+
+// Resolves a page URL to its repo and file path; ErrUnknownRepo for an unknown name, ErrUnknownPath for an unknown route.
+// Fetches the cached HTML for a repo's doc file from {repoID}:docs.
+func (r *Repos) Doc(ctx context.Context, URL string) (string, error)
 ```
 
 Repo renames arrive as a separate `repository` webhook event, which this RFC does not handle, so until the next push the
@@ -658,6 +712,7 @@ old name keeps working and the new one is a 404.
 |---|---|
 | Edit `docs/install/linux.md` | The comparison touches it, so it is **outdated**; only it is fetched |
 | Change a `title` | No referenced path is new, old, or touched; only the `Repo` JSON is rewritten |
+| Move `[guides]` above `[install]` | Siblings are reordered; no path changes, so only the `Repo` JSON is rewritten |
 | Add `[guides.caching]` | `docs/guides/caching.md` is **new** and is fetched |
 | Delete `[guides.database]` | Its key path is gone, so it and its child are removed; both paths are **old** and deleted |
 | `path = "docs/install/mac.md"` | The **new** path returns 404; `install.macos` is cached, so its cached subtree is frozen and `docs/install/macos.md` keeps its HTML |

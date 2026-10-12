@@ -31,7 +31,6 @@ type Repos struct {
 	repoCache   RepoCache
 	commitCache []ConventionalCommit
 	mu          sync.RWMutex
-	logger      *slog.Logger
 }
 
 // A mapping from the numeric ID of a Repo to its fields synced with Redis by [Repos.sync_local_cache].
@@ -137,7 +136,6 @@ func New(ctx context.Context, client Client, logger *slog.Logger) (*Repos, error
 		client:      client,
 		repoCache:   RepoCache{},
 		commitCache: []ConventionalCommit{},
-		logger:      logger.With("package", "repos"),
 	}
 	reposHash, err := r.client.HGetAll(ctx, REPOS_KEY).Result()
 	if err != nil {
@@ -151,7 +149,7 @@ func New(ctx context.Context, client Client, logger *slog.Logger) (*Repos, error
 		}
 		r.repoCache[repo.ID] = &repo
 	}
-	r.commitCache, err = r.fetchCommits(ctx)
+	r.commitCache, err = r.fetchCommits(ctx, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -162,13 +160,13 @@ func New(ctx context.Context, client Client, logger *slog.Logger) (*Repos, error
 		return nil, err
 	}
 
-	go r.syncLocalCache(ctx, sub)
+	go r.syncLocalCache(ctx, sub, logger)
 	return &r, nil
 }
 
 // fetchCommits loads the aggregated commit history from Redis in newest to oldest order,
 // skipping entries that fail to decode.
-func (r *Repos) fetchCommits(ctx context.Context) ([]ConventionalCommit, error) {
+func (r *Repos) fetchCommits(ctx context.Context, logger *slog.Logger) ([]ConventionalCommit, error) {
 	args := redis.ZRangeArgs{Key: COMMITS_UPDATE_PREFIX, Start: 0, Stop: -1, Rev: true}
 	jsonCommits, err := r.client.ZRangeArgs(ctx, args).Result()
 	if err != nil {
@@ -179,7 +177,7 @@ func (r *Repos) fetchCommits(ctx context.Context) ([]ConventionalCommit, error) 
 	for _, val := range jsonCommits {
 		var c ConventionalCommit
 		if err := json.Unmarshal([]byte(val), &c); err != nil {
-			r.logger.Warn("failed to Unmarshal fetched commit JSON string", "content", val, "err", err)
+			logger.Warn("failed to Unmarshal fetched commit JSON string", "content", val, "err", err)
 			continue
 		}
 		commits = append(commits, c)
@@ -192,7 +190,7 @@ func (r *Repos) fetchCommits(ctx context.Context) ([]ConventionalCommit, error) 
 // During local cache reconciliation [sync.RWMutex.Lock] is called and blocks all other goroutines from
 // reading or writing to [Repos.repoCache].
 // NOTE: [redis.Message.Payload] format is assumed to be UPDATE_TYPE | UPDATE_TYPE:[Repo.ID]
-func (r *Repos) syncLocalCache(ctx context.Context, sub Subscription) {
+func (r *Repos) syncLocalCache(ctx context.Context, sub Subscription, logger *slog.Logger) {
 	defer sub.Close()
 	for {
 		select {
@@ -206,25 +204,25 @@ func (r *Repos) syncLocalCache(ctx context.Context, sub Subscription) {
 			if strings.HasPrefix(msg.Payload, REPOS_UPDATE_PREFIX) {
 				_, repoID, ok := strings.Cut(msg.Payload, ":")
 				if !ok {
-					r.logger.Warn("malformed repo update message published to updates channel", "payload", msg.Payload)
+					logger.Warn("malformed repo update message published to updates channel", "payload", msg.Payload)
 					continue
 				}
 
 				_, err := strconv.ParseInt(repoID, 10, 64)
 				if err != nil {
-					r.logger.Warn("malformed repo ID published to updates channel", "payload", msg.Payload, "err", err)
+					logger.Warn("malformed repo ID published to updates channel", "payload", msg.Payload, "err", err)
 					continue
 				}
 
 				repo_bytes, err := r.client.HGet(ctx, REPOS_KEY, repoID).Bytes()
 				if err != nil {
-					r.logger.Warn("failed to fetch repo from Redis", "id", repoID, "err", err)
+					logger.Warn("failed to fetch repo from Redis", "id", repoID, "err", err)
 					continue
 				}
 
 				var repo Repo
 				if err := json.Unmarshal(repo_bytes, &repo); err != nil {
-					r.logger.Warn("invalid repo JSON in Redis", "id", repoID, "err", err)
+					logger.Warn("invalid repo JSON in Redis", "id", repoID, "err", err)
 					continue
 				}
 
@@ -232,9 +230,9 @@ func (r *Repos) syncLocalCache(ctx context.Context, sub Subscription) {
 				r.repoCache[repo.ID] = &repo
 				r.mu.Unlock()
 			} else if msg.Payload == COMMITS_UPDATE_PREFIX {
-				commits, err := r.fetchCommits(ctx)
+				commits, err := r.fetchCommits(ctx, logger)
 				if err != nil {
-					r.logger.Warn("failed to fetch commits from Redis", "payload", msg.Payload, "err", err)
+					logger.Warn("failed to fetch commits from Redis", "payload", msg.Payload, "err", err)
 					continue
 				}
 
@@ -281,8 +279,7 @@ func (r *Repos) Commits() []ConventionalCommit {
 	return r.commitCache
 }
 
-// Reconciles the Redis cache via updating the Repo JSON string or fetching and parsing new or changed
-// Markdown files to HTML strings, minimal work is done when nothing is changed.
+// Reconciles the Redis cache with the repo at the event's after SHA, retrying when another push commits first.
 func (r *Repos) Set(ctx context.Context, event GithubPushEvent) error {
 	// fetch the `docs/config.yml`
 
