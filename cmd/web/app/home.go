@@ -3,7 +3,8 @@ package app
 import "net/http"
 
 func (a *App) home(w http.ResponseWriter, r *http.Request) {
-	a.render(w, r, "home", a.repos.Get())
+	repos, _ := a.repos.Get()
+	a.render(w, r, "home", repos)
 }
 
 // colSpans[k] is the layout for k+1 repos; the last row also serves any larger count.

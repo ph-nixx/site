@@ -3,6 +3,7 @@ package repos
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -24,13 +25,36 @@ const (
 
 	REPOS_UPDATE_PREFIX   = "repos"
 	COMMITS_UPDATE_PREFIX = "commits"
+
+	// Suffix of the per repo hash of rendered docs.
+	// HGET {Repo.ID}{DOCS_KEY_SUFFIX} path/to/file.md -> HTML string
+	DOCS_KEY_SUFFIX = ":docs"
+
+	// Repo root relative paths fetched on every push.
+	DOCS_CONFIG_PATH = "docs.toml"
+	README_PATH      = "README.md"
+
+	// Starting values from the RFC; adjust once real ingestion times are known.
+	MAX_RESTARTS       = 3                   // Overtaken restarts before Set fails
+	TX_RETRIES         = 3                   // WATCH aborts retried inside one transaction
+	COMPARE_FILE_LIMIT = 300                 // a comparison with this many files may be truncated
+	MAX_DOC_DEPTH      = 3                   // chapter, section, subsection
+	COMMIT_RETENTION   = 90 * 24 * time.Hour // commits older than this are pruned from the log
 )
 
+var (
+	ErrUnknownRepo = errors.New("unknown repo") // respond 404
+	ErrUnknownPath = errors.New("unknown path") // redirect to /{repo name}
+)
+
+// The local cache of every repo and the commit log, synced with Redis by syncLocalCache.
 type Repos struct {
-	client      Client
-	repoCache   RepoCache
-	commitCache []ConventionalCommit
-	mu          sync.RWMutex
+	client      Client               // Redis
+	github      Github               // GitHub REST API calls used by ingestion
+	repoCache   RepoCache            // Repo.ID -> repo
+	names       map[string]int64     // Repo.Name -> Repo.ID, used only to resolve the first URL segment
+	commitCache []ConventionalCommit // newest to oldest
+	mu          sync.RWMutex         // guards repoCache, names, and commitCache, which are updated together
 }
 
 // A mapping from the numeric ID of a Repo to its fields synced with Redis by [Repos.sync_local_cache].
@@ -42,6 +66,11 @@ type Client interface {
 	HGet(ctx context.Context, key, field string) *redis.StringCmd
 	Subscribe(ctx context.Context, channels ...string) Subscription
 	ZRangeArgs(ctx context.Context, z redis.ZRangeArgs) *redis.StringSliceCmd
+	Watch(ctx context.Context, fn func(*redis.Tx) error, keys ...string) error
+	ZRange(ctx context.Context, key string, start, stop int64) *redis.StringSliceCmd
+	ZAdd(ctx context.Context, key string, members ...redis.Z) *redis.IntCmd
+	ZRemRangeByScore(ctx context.Context, key, min, max string) *redis.IntCmd
+	Publish(ctx context.Context, channel string, message any) *redis.IntCmd
 }
 
 type Subscription interface {
@@ -69,24 +98,38 @@ func (r *redisClient) ZRangeArgs(ctx context.Context, z redis.ZRangeArgs) *redis
 	return r.Client.ZRangeArgs(ctx, z)
 }
 
-// A representation of a Git repo that is intended to be displayed as a project.
-// NOTE: data modeling is not done
+// A Git repo displayed as a project, stored as a JSON string in the `repos` hash.
 type Repo struct {
-	ID          int64     `json:"id"`
-	SVG         string    `json:"svg"`
-	Name        string    `json:"name"`
-	FullName    string    `json:"full_name"`
-	Description string    `json:"description"`
-	LastCommit  time.Time `json:"last_commit"`
+	ID              int64        `json:"id"`                // immutable GitHub repo ID
+	Name            string       `json:"name"`              // GitHub repo name, the first URL segment
+	FullName        string       `json:"full_name"`         // owner/name, used for GitHub API requests
+	Title           string       `json:"title"`             // [project].title, or Name with the first character capitalized
+	Description     string       `json:"description"`       // GitHub repo description
+	SVG             string       `json:"svg"`               // [project].svg
+	DocSections     []DocSection `json:"doc_sections"`      // chapters as served, in docs.toml order: invalid nodes frozen or skipped
+	LastCommit      time.Time    `json:"last_commit"`       // timestamp of the push's head commit
+	LastIngestedSHA string       `json:"last_ingested_sha"` // last commit whose docs were fully ingested
+	LastPushedAt    time.Time    `json:"last_pushed_at"`    // when GitHub received the push at LastIngestedSHA; orders pushes the comparison cannot
+
+	// Derived by the local cache on load, never written to Redis.
+	DocRoutes map[string]string `json:"-"` // stacked segments to file path, e.g. "install/linux" -> "docs/install/linux.md"; "" -> README.md
+}
+
+// A chapter, section, or subsection parsed from docs.toml.
+type DocSection struct {
+	Frozen      bool         `json:"frozen,omitempty"` // kept from the last ingest because the node is currently invalid
+	Segment     string       `json:"segment"`          // this node's URL segment, without its ancestors
+	Title       string       `json:"title"`            // sidebar text
+	Path        string       `json:"path"`             // repo root relative file path; empty for a heading only chapter
+	SubSections []DocSection `json:"sub_sections"`     // children in docs.toml order, at most depth 3 in total
 }
 
 // A representation of a Git commit that conforms to the
 // [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/O) standard.
-// NOTE: data modeling is not done
 type ConventionalCommit struct {
 	ID        string    `json:"id"`
-	RepoName  string    `json:"repo_name"`
-	Timestamp time.Time `json:"timestamp"`
+	RepoID    int64     `json:"repo_id"`   // matches Repo.ID, used by the deep clean and to look up the repo's current name
+	Timestamp time.Time `json:"timestamp"` // committer date, never a time derived from the push
 
 	// <[ConventionalCommit.Type]>(optional [ConventionalCommit.Scope]): <[ConventionalCommit.Description]>
 	//
@@ -98,43 +141,12 @@ type ConventionalCommit struct {
 	Body        string `json:"body"`
 }
 
-type GithubPushEvent struct {
-	Repo       GithubRepo     `json:"repository"`
-	HeadCommit GithubCommit   `json:"head_commit"`
-	Commits    []GithubCommit `json:"commits"`
-}
-
-// Repository as returned by the GitHub REST API.
-type GithubRepo struct {
-	ID          int64  `json:"id"`
-	Name        string `json:"name"`
-	FullName    string `json:"full_name"`
-	Description string `json:"description"`
-	Language    string `json:"language"`
-}
-
-// Commit is a single pushed commit as returned by a GitHub push event.
-type GithubCommit struct {
-	ID        string    `json:"id"`
-	RepoName  string    `json:"repo_name"`
-	Timestamp time.Time `json:"timestamp"`
-	Author    Author    `json:"author"`
-	Distinct  bool      `json:"distinct"`
-	Message   string    `json:"message"`
-	Added     []string  `json:"added"`
-	Modified  []string  `json:"modified"`
-	Removed   []string  `json:"removed"`
-}
-
-type Author struct {
-	Username string `json:"username"`
-	Email    string `json:"email"`
-}
-
-func New(ctx context.Context, client Client, logger *slog.Logger) (*Repos, error) {
+func New(ctx context.Context, client Client, gh Github, logger *slog.Logger) (*Repos, error) {
 	r := Repos{
 		client:      client,
+		github:      gh,
 		repoCache:   RepoCache{},
+		names:       map[string]int64{},
 		commitCache: []ConventionalCommit{},
 	}
 	reposHash, err := r.client.HGetAll(ctx, REPOS_KEY).Result()
@@ -246,7 +258,7 @@ func (r *Repos) syncLocalCache(ctx context.Context, sub Subscription, logger *sl
 
 // Get a subset of repos from [Repos.repoCache] or the entire set if no IDs are provided.
 // This function does block if [Repos.repoCache] is being synced with the Redis cache.
-func (r *Repos) Get(IDs ...int64) []*Repo {
+func (r *Repos) Get(IDs ...int64) ([]*Repo, bool) {
 	if IDs == nil {
 		r.mu.RLock() // NOTE: need to lock before alloc because mutation may change the number of pairs
 		repos := make([]*Repo, 0, len(r.repoCache))
@@ -258,7 +270,7 @@ func (r *Repos) Get(IDs ...int64) []*Repo {
 			repos = append(repos, v)
 		}
 		r.mu.RUnlock()
-		return repos
+		return repos, len(repos) > 0
 	}
 
 	r.mu.RLock()
@@ -269,7 +281,22 @@ func (r *Repos) Get(IDs ...int64) []*Repo {
 		}
 	}
 	r.mu.RUnlock()
-	return repos
+	return repos, len(repos) > 0
+}
+
+// A [Repos.Get] wrapper that uses [Repos.names] to do the [Repo.Name] -> [Repo.ID] mapping.
+func (r *Repos) GetByName(name string) (*Repo, bool) {
+	ID, ok := r.names[name]
+	if !ok {
+		return nil, false
+	}
+
+	repo, ok := r.Get(ID)
+	if ok {
+		return repo[0], ok
+	}
+
+	return nil, false
 }
 
 // Yields the aggregated commits from the set of repos in newest to oldest order.
@@ -279,11 +306,24 @@ func (r *Repos) Commits() []ConventionalCommit {
 	return r.commitCache
 }
 
-// Reconciles the Redis cache with the repo at the event's after SHA, retrying when another push commits first.
-func (r *Repos) Set(ctx context.Context, event GithubPushEvent) error {
-	// fetch the `docs/config.yml`
+// Builds a cache ready repo from its stored JSON: decodes it and maps every node with a non empty Path (plus the project
+// page under "") to its file path keyed by stacked segments in DocRoutes.
+func NewRepo(data []byte) (*Repo, error) {
+	panic("unimplemented")
+}
 
-	// ensure the event commits are sorted by timestamp in high to low order
+// Stores a derived repo in the local cache by ID and maps its name to that ID, removing its old name if it was renamed.
+func (r *Repos) replace(repo *Repo) {
+	panic("unimplemented")
+}
 
-	return nil
+// Removes the repo with the given ID, and its name, from the local cache.
+func (r *Repos) dropFromLocal(repoID int64) {
+	panic("unimplemented")
+}
+
+// Resolves a page URL to its repo and file path, then fetches the cached HTML for that file from {repoID}:docs;
+// ErrUnknownRepo for an unknown name, ErrUnknownPath for an unknown route.
+func (r *Repos) Doc(ctx context.Context, URL string) (string, error) {
+	panic("unimplemented")
 }

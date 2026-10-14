@@ -68,6 +68,26 @@ func (f *mockClient) ZRangeArgs(ctx context.Context, z redis.ZRangeArgs) *redis.
 	return cmd
 }
 
+func (f *mockClient) Watch(ctx context.Context, fn func(*redis.Tx) error, keys ...string) error {
+	panic("unimplemented")
+}
+
+func (f *mockClient) ZRange(ctx context.Context, key string, start, stop int64) *redis.StringSliceCmd {
+	panic("unimplemented")
+}
+
+func (f *mockClient) ZAdd(ctx context.Context, key string, members ...redis.Z) *redis.IntCmd {
+	panic("unimplemented")
+}
+
+func (f *mockClient) ZRemRangeByScore(ctx context.Context, key, min, max string) *redis.IntCmd {
+	panic("unimplemented")
+}
+
+func (f *mockClient) Publish(ctx context.Context, channel string, message any) *redis.IntCmd {
+	panic("unimplemented")
+}
+
 // setCommits replaces the commit set; pass raw JSON strings, newest first.
 func (f *mockClient) setCommits(vals ...string) {
 	f.mu.Lock()
@@ -138,12 +158,12 @@ func eventually(t *testing.T, cond func() bool, msg string) {
 func Test_get_returns_repo_subject_to_variadic_arg_convention(t *testing.T) {
 	c := map[int64]*Repo{1: nil, 2: nil}
 	r := Repos{repoCache: c}
-	result := r.Get()
-	if 2 != len(result) {
+	result, ok := r.Get()
+	if !ok || 2 != len(result) {
 		t.Error("expected length 2", "got", result)
 	}
-	result = r.Get(2)
-	if len(result) != 1 {
+	result, ok = r.Get(2)
+	if !ok || len(result) != 1 {
 		t.Error("expected length 1", "got", result)
 	}
 }
@@ -157,13 +177,13 @@ func Test_new_repos_subscribes_and_syncs_local_cache(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	r, err := New(ctx, client, slog.New(slog.DiscardHandler))
+	r, err := New(ctx, client, nil, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Initial load comes from HGetAll.
-	if got := r.Get(1); len(got) != 1 || got[0] == nil || got[0].Name != "one" {
+	if got, _ := r.Get(1); len(got) != 1 || got[0] == nil || got[0].Name != "one" {
 		t.Fatalf("expected repo 1 loaded at startup, got %v", got)
 	}
 
@@ -172,7 +192,7 @@ func Test_new_repos_subscribes_and_syncs_local_cache(t *testing.T) {
 	client.sub.Publish("repos:2")
 
 	eventually(t, func() bool {
-		got := r.Get(2)
+		got, _ := r.Get(2)
 		return len(got) == 1 && got[0] != nil && got[0].Name == "two"
 	}, "repo 2 to appear in local cache")
 
@@ -183,7 +203,7 @@ func Test_new_repos_subscribes_and_syncs_local_cache(t *testing.T) {
 	client.sub.Publish("repos:3")
 
 	eventually(t, func() bool {
-		got := r.Get(3)
+		got, _ := r.Get(3)
 		return len(got) == 1 && got[0] != nil
 	}, "repo 3 to appear after a malformed message")
 
@@ -209,7 +229,7 @@ func Test_new_repos_loads_commits_and_resyncs_on_update(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	r, err := New(ctx, client, slog.New(slog.DiscardHandler))
+	r, err := New(ctx, client, nil, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +264,7 @@ func Test_new_repos_returns_error_when_commits_fetch_fails(t *testing.T) {
 	client := newMockClient(map[string]string{})
 	client.zrangeErr = errors.New("boom")
 
-	if _, err := New(context.Background(), client, slog.New(slog.DiscardHandler)); err == nil {
+	if _, err := New(context.Background(), client, nil, slog.New(slog.DiscardHandler)); err == nil {
 		t.Fatal("expected New to fail when the commits fetch fails")
 	}
 }

@@ -50,6 +50,26 @@ func (f *mockClient) ZRangeArgs(ctx context.Context, z redis.ZRangeArgs) *redis.
 	return cmd
 }
 
+func (f *mockClient) Watch(ctx context.Context, fn func(*redis.Tx) error, keys ...string) error {
+	panic("unimplemented")
+}
+
+func (f *mockClient) ZRange(ctx context.Context, key string, start, stop int64) *redis.StringSliceCmd {
+	panic("unimplemented")
+}
+
+func (f *mockClient) ZAdd(ctx context.Context, key string, members ...redis.Z) *redis.IntCmd {
+	panic("unimplemented")
+}
+
+func (f *mockClient) ZRemRangeByScore(ctx context.Context, key, min, max string) *redis.IntCmd {
+	panic("unimplemented")
+}
+
+func (f *mockClient) Publish(ctx context.Context, channel string, message any) *redis.IntCmd {
+	panic("unimplemented")
+}
+
 // mockSub is a repos.Subscription that never delivers a message.
 type mockSub struct{}
 
@@ -71,7 +91,7 @@ func TestIcon(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	discard := slog.New(slog.DiscardHandler)
-	r, err := repos.New(ctx, newMockClient(hash), discard)
+	r, err := repos.New(ctx, newMockClient(hash), nil, discard)
 	if err != nil {
 		t.Fatal(err)
 	}

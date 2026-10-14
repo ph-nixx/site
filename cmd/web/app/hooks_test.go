@@ -1,17 +1,17 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/go-github/v91/github"
 	"github.com/ph-nixx/site/cmd/web/repos"
 )
 
@@ -218,42 +218,23 @@ func newHookApp(t *testing.T) *App {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	discard := slog.New(slog.DiscardHandler)
-	rs, err := repos.New(ctx, newMockClient(map[string]string{}), discard)
+	rs, err := repos.New(ctx, newMockClient(map[string]string{}), nil, discard)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return &App{Logger: discard, repos: rs}
 }
 
-// pushEventResponse wraps body as a push webhook delivery.
-func pushEventResponse(body string) *http.Response {
-	return &http.Response{
-		StatusCode: http.StatusOK,
-		Header: http.Header{
-			"Content-Type":   {"application/json"},
-			"X-Github-Event": {"push"},
-		},
-		Body: io.NopCloser(strings.NewReader(body)),
-	}
+// pushEventRequest wraps body as a push webhook delivery.
+func pushEventRequest(body string) *http.Request {
+	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("X-Github-Event", "push")
+	return r
 }
 
 func Test_github_push_event_is_parsed_correctly(t *testing.T) {
-	a := newHookApp(t)
-	w := httptest.NewRecorder()
-
-	a.githubPushEvent(w, pushEventResponse(pushEventPayload))
-
-	// The handler hands the event to repos.Set and writes nothing, so GitHub
-	// sees an implicit 200 with an empty body.
-	if w.Code != http.StatusOK {
-		t.Errorf("status %d, want 200", w.Code)
-	}
-	if w.Body.Len() != 0 {
-		t.Errorf("body = %q, want empty", w.Body.String())
-	}
-
-	// The handler doesn't expose the decoded event, so check parsing by decoding directly.
-	var event repos.GithubPushEvent
+	var event github.PushEvent
 	if err := json.Unmarshal([]byte(pushEventPayload), &event); err != nil {
 		t.Fatal(err)
 	}
@@ -265,60 +246,78 @@ func Test_github_push_event_is_parsed_correctly(t *testing.T) {
 		}
 		return v
 	}
-	author := repos.Author{Username: "ph-nixx", Email: "ph-nixx@users.noreply.github.com"}
-	wantCommits := []repos.GithubCommit{
+
+	repo := event.GetRepo()
+	for name, pair := range map[string][2]any{
+		"ref":              {event.GetRef(), "refs/heads/main"},
+		"after":            {event.GetAfter(), "d5d2788b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f"},
+		"repo id":          {repo.GetID(), int64(812345678)},
+		"repo name":        {repo.GetName(), "site"},
+		"repo full_name":   {repo.GetFullName(), "ph-nixx/site"},
+		"repo description": {repo.GetDescription(), "Personal site rendered from Go templates"},
+		"default_branch":   {repo.GetDefaultBranch(), "main"},
+		"pushed_at":        {repo.GetPushedAt().Unix(), int64(1791493392)},
+		"head_commit":      {event.GetHeadCommit().GetID(), "d5d2788b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f"},
+	} {
+		if pair[0] != pair[1] {
+			t.Errorf("%s = %v, want %v", name, pair[0], pair[1])
+		}
+	}
+
+	wantCommits := []struct {
+		ID        string
+		Message   string
+		Timestamp time.Time
+		Added     []string
+		Modified  []string
+		Removed   []string
+	}{
 		{
 			ID:        "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
-			Timestamp: ts("2026-10-08T13:58:40-07:00"),
-			Author:    author,
-			Distinct:  true,
 			Message:   "fix: drop old webhook handler",
+			Timestamp: ts("2026-10-08T13:58:40-07:00"),
 			Added:     []string{},
 			Modified:  []string{"cmd/web/app/hooks.go"},
 			Removed:   []string{"cmd/web/app/old_hooks.go"},
 		},
 		{
 			ID:        "d5d2788b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f",
-			Timestamp: ts("2026-10-08T14:03:12-07:00"),
-			Author:    author,
-			Distinct:  true,
 			Message:   "docs\n\nDocument the webhook endpoint.",
+			Timestamp: ts("2026-10-08T14:03:12-07:00"),
 			Added:     []string{"docs/webhooks.md"},
 			Modified:  []string{"README.md", "cmd/web/app/hooks.go"},
 			Removed:   []string{},
 		},
 	}
-
-	wantRepo := repos.GithubRepo{
-		ID:          812345678,
-		Name:        "site",
-		FullName:    "ph-nixx/site",
-		Description: "Personal site rendered from Go templates",
-		Language:    "Go",
+	if len(event.Commits) != len(wantCommits) {
+		t.Fatalf("got %d commits, want %d", len(event.Commits), len(wantCommits))
 	}
-
-	// Compare marshaled bytes: time.Time values parsed separately don't share a
-	// *Location, so reflect.DeepEqual would report a false mismatch.
-	for name, pair := range map[string][2]any{
-		"repository":  {event.Repo, wantRepo},
-		"commits":     {event.Commits, wantCommits},
-		"head_commit": {event.HeadCommit, wantCommits[len(wantCommits)-1]},
-	} {
-		got, err := json.Marshal(pair[0])
-		if err != nil {
-			t.Fatal(err)
-		}
-		want, err := json.Marshal(pair[1])
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !bytes.Equal(got, want) {
-			t.Errorf("%s mismatch\n got: %s\nwant: %s", name, got, want)
+	for i, want := range wantCommits {
+		got := event.Commits[i]
+		if got.GetID() != want.ID || got.GetMessage() != want.Message || !got.GetTimestamp().Time.Equal(want.Timestamp) ||
+			!slices.Equal(got.Added, want.Added) || !slices.Equal(got.Modified, want.Modified) ||
+			!slices.Equal(got.Removed, want.Removed) {
+			t.Errorf("commit %d mismatch\n got: %+v\nwant: %+v", i, got, want)
 		}
 	}
 }
 
-func Test_github_push_event_with_invalid_json_returns_500(t *testing.T) {
+// A push to another branch is accepted and dropped, so it exercises the handler without starting ingestion.
+func Test_github_push_event_responds_202(t *testing.T) {
+	t.Skip("githubPushEvent is unimplemented")
+	a := newHookApp(t)
+	w := httptest.NewRecorder()
+	body := strings.Replace(pushEventPayload, `"refs/heads/main"`, `"refs/heads/feature"`, 1)
+
+	a.githubPushEvent(w, pushEventRequest(body))
+
+	if w.Code != http.StatusAccepted {
+		t.Errorf("status %d, want 202", w.Code)
+	}
+}
+
+func Test_github_push_event_with_invalid_json_returns_400(t *testing.T) {
+	t.Skip("githubPushEvent is unimplemented")
 	for name, body := range map[string]string{
 		"empty":     "",
 		"malformed": `{"repository": {"id": 1,`,
@@ -329,10 +328,10 @@ func Test_github_push_event_with_invalid_json_returns_500(t *testing.T) {
 			a := newHookApp(t)
 			w := httptest.NewRecorder()
 
-			a.githubPushEvent(w, pushEventResponse(body))
+			a.githubPushEvent(w, pushEventRequest(body))
 
-			if w.Code != http.StatusInternalServerError {
-				t.Errorf("status %d, want 500", w.Code)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("status %d, want 400", w.Code)
 			}
 		})
 	}

@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/google/go-github/v91/github"
 	"github.com/ph-nixx/site/cmd/web/repos"
 	"github.com/redis/go-redis/v9"
 )
@@ -42,7 +43,12 @@ func New(ctx context.Context, logger *slog.Logger) (*App, error) {
 		return nil, err
 	}
 
-	r, err := repos.New(ctx, repos.FromRedisClient(redis.NewClient(opts)), logger)
+	gh, err := github.NewClient()
+	if err != nil {
+		return nil, err
+	}
+
+	r, err := repos.New(ctx, repos.FromRedisClient(redis.NewClient(opts)), repos.FromGithubClient(gh), logger)
 	if err != nil {
 		return nil, err
 	}
@@ -72,8 +78,8 @@ func (a *App) icon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repo := a.repos.Get(ID)
-	if len(repo) == 0 || repo[0].SVG == "" {
+	repo, ok := a.repos.Get(ID)
+	if !ok || repo[0].SVG == "" {
 		http.NotFound(w, r)
 		return
 	}
