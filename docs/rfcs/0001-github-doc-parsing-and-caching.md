@@ -10,13 +10,13 @@ status: open
 When a GitHub push event to the default branch arrives for an eligible repo, the server brings its Redis cache in line
 with the repo's documentation at the pushed commit (the event's `after` SHA) and with its commit history.
 Every file read for a push uses that same `after` SHA.
-The work is split into an initial sequential step that validates the push, followed by two phases that run concurrently
+The work is split into an initial sequential step that validates the push, followed by two processes that run concurrently
 and write independently once validation passes.
 
 Pushes to other branches, and pushes to repos whose name is on the server's hard coded blacklist of names reserved for
 site routes, are dropped by the webhook handler before any of this starts.
 
-**Initial step.** Make three GitHub API requests in parallel:
+**Process zero: validation.** Make three GitHub API requests in parallel:
 
 * Fetch `docs.toml` from the repo root at `after`.
 * Fetch `README.md` from the repo root at `after`.
@@ -31,7 +31,7 @@ when GitHub received the cached push no earlier than this one (`Repo.LastPushedA
 Comparing from what was actually ingested, rather than trusting the push's own commits, means a missed, failed, or
 out of order push is picked up by the next one.
 
-Once all three requests return, the push is validated before either phase starts:
+Once all three requests return, the push is validated before either process starts:
 
 * `docs.toml` must parse;
 * on the first ingest, `README.md` must exist.
@@ -64,7 +64,7 @@ A repo whose `docs.toml` is later restored is ingested from scratch.
   Field keys match the file paths GitHub reports in comparisons, so no translation is needed.
 * `commits`: a sorted set of `ConventionalCommit` JSON strings scored by commit timestamp, aggregated across all repos.
 
-**Phase one: docs.** Compare the cached `Repo.DocSections` with the freshly parsed one, together with the comparison's
+**Process one: docs.** Compare the cached `Repo.DocSections` with the freshly parsed one, together with the comparison's
 file list, to classify every referenced Markdown path:
 
 * **new**: referenced now but not before; fetch, parse to HTML, `HSET`.
@@ -92,14 +92,14 @@ If the check fails, another push committed first. When GitHub received that push
 until it commits or the new comparison shows it is stale.
 Any other failure writes nothing and leaves `Repo.LastIngestedSHA` unchanged, so the next push retries the work.
 
-**Phase two: commits.** Parse the comparison's commits into `ConventionalCommit` values, dropping any commit whose
+**Process two: commits.** Parse the comparison's commits into `ConventionalCommit` values, dropping any commit whose
 message does not strictly follow the Conventional Commits specification, add them to `commits`,
 then prune every member whose score is older than the current UTC time minus 90 days.
 When there is no usable comparison (first ingest, `diverged`, or a 5xx or 404 from the comparison), the push event's
 own commits are used instead.
 Using the comparison means commits from pushes that were frozen or failed are logged once a later push succeeds;
 commits that were already logged are added again harmlessly, since identical members are not duplicated.
-Phase two does not wait for phase one's write: once validation passes, a failure in phase one (a rate limit, a timeout,
+Process two does not wait for process one's write: once validation passes, a failure in process one (a rate limit, a timeout,
 or a lost SHA check) delays only the docs, which the next push catches up.
 
 ## Guide-level explanation
@@ -487,7 +487,7 @@ func (r *Repos) Set(ctx context.Context, event *github.PushEvent) error
 2. In parallel fetch `docs.toml` and `README.md` at `event.After`, and, if `S` is not empty, compare `S...event.After`.
    A restart reuses the files already fetched, since `event.After` has not changed, and only compares again.
 3. Classify the comparison. **Docs** decides which paths `reconcileDocsConfig` puts in `UpdatePaths` and which nodes
-   it marks `Missing`; **Commits** decides where phase two reads commits from.
+   it marks `Missing`; **Commits** decides where process two reads commits from.
 
 ```mermaid
 flowchart LR
@@ -546,15 +546,15 @@ since `PushedAt` has one second resolution. A repo cached before `LastPushedAt` 
 	- Otherwise the repo was never eligible, stop.
 
 2. Parse `docs.toml` into `DocsConfig`. A TOML syntax error logs a warning and stops.
-   Node level errors mark the node invalid with a warning; phase one decides whether it is frozen or skipped.
+   Node level errors mark the node invalid with a warning; process one decides whether it is frozen or skipped.
 3. Check the `README.md` fetch:
 	- 404 and the repo is not cached: log a warning and stop, since there is no project page to keep.
 	- 404 and the repo is cached: log a warning and leave `DocsConfig.ReadMe` nil, so the project page keeps its cached HTML.
-	- Found: keep the contents in `DocsConfig.ReadMe` so phase one renders them without a second request.
+	- Found: keep the contents in `DocsConfig.ReadMe` so process one renders them without a second request.
 
 Stopping at any point in this step writes nothing and leaves `Repo.LastIngestedSHA` unchanged, which freezes the repo's
 cached docs and commits until a later push passes validation and catches up from `S`.
-Once validation passes, phase one and phase two start concurrently.
+Once validation passes, process one and process two start concurrently.
 
 ```go
 var (
@@ -657,9 +657,9 @@ func (a *App) githubPushEvent(w http.ResponseWriter, r *http.Request)
 //   5. reconcileDocsConfig; ErrDocsSyntax logs a warning and stops, ErrCompare fails
 //   6. README.md 404: stop when cached is nil, otherwise leave cfg.ReadMe nil; when found, store the bytes in
 //      cfg.ReadMe
-//   7. run phase one and phase two concurrently, waiting for both even when one fails and returning their errors joined
-//      phase one: fetchDocs, buildRepo, commitDocs; Superseded stops, Overtaken restarts at 1, up to 3 times
-//      phase two: pick comp.Commits, or event.Commits when S is empty, the comparison diverged, or it failed with a 5xx
+//   7. run process one and process two concurrently, waiting for both even when one fails and returning their errors joined
+//      process one: fetchDocs, buildRepo, commitDocs; Superseded stops, Overtaken restarts at 1, up to 3 times
+//      process two: pick comp.Commits, or event.Commits when S is empty, the comparison diverged, or it failed with a 5xx
 //      or 404, convert with fromComparisonCommit or fromPushCommit, then setCommits
 func (r *Repos) Set(ctx context.Context, event *github.PushEvent) error
 
@@ -688,9 +688,9 @@ func pruneRepo(before, after *Repo) (old []string)
 3. `ZADD commits` every parsed commit, then `ZREMRANGEBYSCORE commits -inf {now - 90 days}`, then
    `PUBLISH repos:updates commits`.
 
-Phase two does not wait for phase one. If phase one later fails, `S` has not moved, so the next push compares from `S`
+Process two does not wait for process one. If process one later fails, `S` has not moved, so the next push compares from `S`
 again and re-adds the same commits, which leaves the sorted set unchanged.
-A restart reruns both phases. Phase two re-adds commits it may already have logged, which leaves the sorted set
+A restart reruns both processes. Process two re-adds commits it may already have logged, which leaves the sorted set
 unchanged, and picks up any commits the first run missed because it read them from the push event rather than a
 comparison.
 

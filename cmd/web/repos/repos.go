@@ -308,7 +308,7 @@ func (r *Repos) Commits() []ConventionalCommit {
 
 // Builds a cache ready repo from its stored JSON: decodes it and maps every node with a non empty Path (plus the project
 // page under "") to its file path keyed by stacked segments in DocRoutes.
-func NewRepo(data []byte) (*Repo, error) {
+func newRepo(data []byte) (*Repo, error) {
 	panic("unimplemented")
 }
 
