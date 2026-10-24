@@ -10,17 +10,19 @@ status: open
 When a GitHub push event to the default branch arrives for an eligible repo, the server brings its Redis cache in line
 with the repo's documentation at the pushed commit (the event's `after` SHA) and with its commit history.
 Every file read for a push uses that same `after` SHA.
+File contents are read through GitHub's GraphQL API, which returns any set of paths in one request; the comparison
+uses the REST API, the only one that lists the files a comparison changed.
 The work is split into an initial sequential step that validates the push, followed by two processes that run concurrently
 and write independently once validation passes.
 
 Pushes to other branches, and pushes to repos whose name is on the server's hard coded blacklist of names reserved for
 site routes, are dropped by the webhook handler before any of this starts.
 
-**Process zero: validation.** Make three GitHub API requests in parallel:
+**Process zero: validation.** Make two GitHub API requests in parallel:
 
-* Fetch `docs.toml` from the repo root at `after`.
-* Fetch `README.md` from the repo root at `after`.
-* Compare `Repo.LastIngestedSHA...after`, where `Repo.LastIngestedSHA` is the last commit whose docs were fully ingested.
+* Fetch `docs.toml` and `README.md` from the repo root at `after`, together in one GraphQL request.
+* Compare `Repo.LastIngestedSHA...after` through the REST API, where `Repo.LastIngestedSHA` is the last commit whose
+  docs were fully ingested.
 
 The comparison's `status` decides what happens next: `ahead` continues; `behind` or `identical` means a newer or
 identical push was already ingested, so the push stops without writing anything; `diverged` (a force push) triggers a
@@ -31,7 +33,7 @@ when GitHub received the cached push no earlier than this one (`Repo.LastPushedA
 Comparing from what was actually ingested, rather than trusting the push's own commits, means a missed, failed, or
 out of order push is picked up by the next one.
 
-Once all three requests return, the push is validated before either process starts:
+Once both requests return, the push is validated before either process starts:
 
 * `docs.toml` must parse;
 * on the first ingest, `README.md` must exist.
@@ -54,7 +56,7 @@ which removes every trace of the repo from the cache, including its `repos` entr
 and its members of `commits` (matched by `ConventionalCommit.RepoID`).
 A repo whose `docs.toml` is later restored is ingested from scratch.
 
-**Redis layout.**
+**Redis layout**
 
 * `repos`: a hash mapping each `Repo.ID` to its `Repo` JSON string, including `Repo.DocSections`.
   Keeping metadata in one hash makes fetching every repo for the landing page a single `HGETALL`.
@@ -83,7 +85,7 @@ recursively and puts their paths in **old**.
 Existence is known without extra requests: **new** and **outdated** paths are fetched anyway, where a 404 marks them
 invalid, and an **unchanged** path still exists unless the comparison lists it as removed.
 A chapter's `path` is optional; a chapter without one is a non-clickable heading and contributes no path.
-Fetches for **new** and **outdated** paths run concurrently.
+**New** and **outdated** paths are fetched together in one GraphQL request.
 All writes for the push, including the `Repo` JSON string with `Repo.LastIngestedSHA` set to `after`, are applied by a
 single Redis transaction, and only if the stored `Repo.LastIngestedSHA` still equals the value read at the start.
 The `Repo` JSON string is overwritten on every successful push, since one `HSET` is cheaper than diffing the metadata.
@@ -243,8 +245,7 @@ and ends by revisiting the Guide-level examples.
 
 ### `docs.toml` schema
 
-`docs.toml` lives at the repo root.
-It must exist for a repo to be eligible, but it may be empty, in which case every value takes its default
+`docs.toml` lives at the repo root. It must exist for a repo to be eligible, but it may be empty, in which case every value takes its default
 and the repo gets a project page and no chapters.
 
 ```toml
@@ -269,54 +270,34 @@ segment = "c" # optional, must be a slug, defaults to the table name e.g. "secti
 title = "Section B" # optional, defaults to the table name with dashes turned into spaces and the first character capitalized e.g. "Section b"
 ```
 
-A slug matches `^[a-z0-9]+(-[a-z0-9]+)*$`.
-Depth is counted from the chapter: chapter is 1, section is 2, subsection is 3. 
-Order is significant: chapters keep the order in which their tables appear in the file, and the children of every node keep the order 
-in which their own tables appear. `[project]` is not a chapter and has no position.
-Decoding into a Go map loses this order, so `reconcileDocsConfig` must read it from the document itself (the order reported by the TOML decoder's metadata).
-Tables deeper than depth 3 are ignored with a warning.
-
-Validation happens at two levels.
-**File level** errors fail the whole push early (see [Validation](#validation)):
-
-* `docs.toml` is not valid TOML.
-* on the first ingest, `README.md` does not exist. After the first ingest, a missing `README.md` freezes the project
-  page instead.
-
-**Node level** errors make one chapter or section invalid. A warning is logged, the rest of the tree is ingested
-normally, and the invalid node is [[0001-github-doc-parsing-and-caching#Node identity and frozen nodes|frozen]] if it was ingested before, or skipped if it
-is new:
-
-* The table name or `segment` is not a slug.
-* A section has no `path`, or any `path` does not end in `.md`.
-* The `path` points to a file that does not exist at `after`.
-* Two siblings resolve to the same segment (both siblings are invalid).
+A slug matches `^[a-z0-9]+(-[a-z0-9]+)*$`. Depth is determined by the degree a table is nested: depth 1 is `[depth1]`, depth 2 is `[table.depth2]`, and depth 3 is `[table.subtable.depth3]`. Table order is significant: table UI is displayed in the order in which the tables appear in the file. 
+`[project]` is a special table and has no position. Decoding into a Go map loses this order, so `reconcileDocsConfig` must read it from the document itself (the order reported by the TOML decoder's metadata). Subtables deeper than depth 3 are ignored with a warning.
 
 ### Node identity and frozen nodes
 
-A node is identified by its table path, the chain of table names from its chapter down (e.g. `guides.database`),
-independent of its `segment`, `title`, and `path`.
+A node is identified by its table path, the chain of table names in square brackets (e.g. `[guides.database]`).
 Renaming a table therefore removes one node and adds another.
 
-* **Removed**: a cached node whose table path no longer appears in `docs.toml` is removed together with all of its
-  descendants, and their paths fall into **old**. Moving a table under another parent, including one that would put it
-  deeper than depth 3, changes its table path, so the cached node is removed and the moved table is a new node, or is
-  ignored when it is too deep.
-  This is the only way a cached page is removed.
-* **Frozen**: an invalid node whose key path exists in the cached tree keeps its cached segment, title, and path,
-  marked `Frozen`, and its path keeps its cached HTML. What `docs.toml` now says about the node itself is ignored
-  while it stays frozen. Only the node is frozen: its children are still reconciled from `docs.toml` like any other
-  node, and their URLs stack under the frozen node's cached segment. A frozen node is served like any other.
-* **Skipped**: an invalid node with no cached counterpart has nothing to freeze, and its children have no segment to
-  stack under, so the node and its entire subtree are left out.
-* **Unfrozen**: a node that is valid now but was `Frozen` at the last ingest takes its segment, title, and path from
-  `docs.toml` again, and its own path is treated as **outdated**. Other pushes kept succeeding while it was frozen,
-  so `Repo.LastIngestedSHA` has moved past any edits made to its file, and the comparison alone would miss them.
-  Its children need nothing extra, since they were reconciled on every push while it was frozen.
+**Removed**: a cached node whose table path no longer appears in `docs.toml` is removed together with all of its
+descendants, and their paths fall into **old**. Moving a table under another parent, including one that would put it
+deeper than depth 3, changes its table path, so the cached node is removed and the moved table is a new node, or is
+ignored when it is too deep. This is the only way a cached page is removed.
+  
+**Frozen**: an invalid node whose key path exists in the cached tree keeps its cached segment, title, and path,
+marked `Frozen`, and its path keeps its cached HTML. What `docs.toml` now says about the node itself is ignored
+while it stays frozen. Only the node is frozen: its children are still reconciled from `docs.toml` like any other
+node, and their URLs stack under the frozen node's cached segment. A frozen node is served like any other.
+
+**Skipped**: an invalid node with no cached counterpart has nothing to freeze, and its children have no segment to
+stack under, so the node and its entire subtree are left out.
+
+**Unfrozen**: a node that is valid now but was `Frozen` at the last ingest takes its segment, title, and path from
+`docs.toml` again, and its own path is treated as **outdated**. Other pushes kept succeeding while it was frozen,
+so `Repo.LastIngestedSHA` has moved past any edits made to its file, and the comparison alone would miss them.
+Its children need nothing extra, since they were reconciled on every push while it was frozen.
 
 Position is never frozen: a frozen node stays where its table now appears among its siblings, and its children keep
-the order of their own tables. A skipped node leaves no gap.
-Reordering a node among its siblings keeps its table path and touches no file path, so it is not **Removed** and only
+the order of their own tables. Reordering a node among its siblings keeps its table path and touches no file path, so it is not **Removed** and only
 the `Repo` JSON is rewritten.
 
 ### Data model
@@ -329,7 +310,7 @@ repo is renamed.
 // The local cache of every repo and the commit log, synced with Redis by syncLocalCache.
 type Repos struct {
 	client      Client               // Redis
-	github      Github               // new: GitHub REST API calls used by ingestion
+	github      Github               // new: GitHub API calls used by ingestion: GraphQL file fetches, REST comparisons
 	repoCache   map[int64]*Repo      // Repo.ID -> repo
 	names       map[string]int64     // new: Repo.Name -> Repo.ID, used only to resolve the first URL segment
 	commitCache []ConventionalCommit // newest to oldest
@@ -340,7 +321,7 @@ type Repos struct {
 type Repo struct {
 	ID              int64        `json:"id"`                // immutable GitHub repo ID
 	Name            string       `json:"name"`              // GitHub repo name, the first URL segment
-	FullName        string       `json:"full_name"`         // owner/name, used for GitHub API requests
+	FullName        string       `json:"full_name"`         // owner/name, as GitHub reports it
 	Title           string       `json:"title"`             // [project].title, or Name with the first character capitalized
 	Description     string       `json:"description"`       // GitHub repo description
 	SVG             string       `json:"svg"`               // [project].svg
@@ -375,12 +356,13 @@ type ConventionalCommit struct {
 }
 ```
 
-GitHub's own types come from `github.com/google/go-github/v91/github`, so the server defines none of its own:
+GitHub's REST types come from `github.com/google/go-github/v91/github`, so the server defines none of its own for
+them; go-github does not cover GraphQL, which file fetches use (see [[0001-github-doc-parsing-and-caching#Fetching files|Fetching files]]):
 
 | Fields                                                                        | Source go-github type         |
 | ----------------------------------------------------------------------------- | ----------------------------- |
 | the push webhook payload (`Ref`, `After`, `Repo`, `HeadCommit`, `Commits`)    | `*github.PushEvent`           |
-| the pushed repo (`ID`, `Name`, `FullName`, `Description`, `DefaultBranch`)    | `*github.PushEventRepository` |
+| the pushed repo (`ID`, `Name`, `FullName`, `Owner.Login`, `Description`, `DefaultBranch`) | `*github.PushEventRepository` |
 | a commit in the push payload (`ID`, `Message`, `Timestamp`)                   | `*github.HeadCommit`          |
 | the compare API response (`Status`, `Commits`, `Files`)                       | `*github.CommitsComparison`   |
 | a commit in the comparison (`SHA`, `Commit.Message`, `Commit.Committer.Date`) | `*github.RepositoryCommit`    |
@@ -390,32 +372,76 @@ GitHub's own types come from `github.com/google/go-github/v91/github`, so the se
 Every go-github field is a pointer and is read through its nil safe accessor (e.g. `event.GetAfter()`,
 `event.GetRepo().GetDefaultBranch()`); the rest of this RFC uses field names for brevity.
 Timestamps are `github.Timestamp`, which wraps `time.Time`.
-The two API calls ingestion makes sit behind a small interface, satisfied by a thin wrapper over `*github.Client`,
+The two API calls ingestion makes sit behind a small interface, satisfied by a thin wrapper over `*github.Client`
+that makes REST calls through go-github and posts GraphQL queries through the same client's `NewRequest` and `Do`,
 so ingestion can be tested with a mock just as `Client` mocks Redis:
 
 ```go
-// The GitHub REST API calls ingestion needs.
+// The GitHub API calls ingestion needs: file contents through GraphQL, comparisons through REST.
 type Github interface {
-	// Fetches a file's contents at a commit through Repositories.GetContents; ok is false when it returns 404.
-	FetchFile(ctx context.Context, fullName, path, sha string) (data []byte, ok bool, err error)
+	// Fetches the contents of paths at a commit in one GraphQL request; every path in paths has an entry in files.
+	FetchFiles(ctx context.Context, owner, repo, sha string, paths []string) (files map[string]File, err error)
 
-	// Compares two commits through Repositories.CompareCommits.
-	Compare(ctx context.Context, fullName, base, head string) (*github.CommitsComparison, error)
+	// Compares two commits through Repositories.CompareCommits (REST).
+	Compare(ctx context.Context, owner, repo, base, head string) (*github.CommitsComparison, error)
+}
+
+// The outcome of reading one path through FetchFiles.
+type FileStatus int
+
+const (
+	FileFound      FileStatus = iota // Data holds the file's text
+	FileMissing                      // the path does not exist at the commit
+	FileUnreadable                   // binary, or too large for GraphQL to return inline
+)
+
+// One path read through FetchFiles.
+type File struct {
+	Status FileStatus
+	Data   []byte // nil unless Status is FileFound
 }
 ```
 
-The wrapper splits `FullName` into the owner and repo arguments go-github expects.
+The wrapper's methods take the same owner and repo arguments as go-github and the GraphQL `repository(owner:, name:)`
+field, so each call maps onto its API directly; callers pass `event.Repo.Owner.Login` and `event.Repo.Name`.
+
+#### Fetching files
+
+File contents are read through GitHub's GraphQL API (`POST https://api.github.com/graphql`) rather than the REST
+contents endpoints, which take one path per request. `FetchFiles` builds a single query with one aliased
+`object(expression:)` field per path, each pinned to the pushed commit:
+
+```graphql
+query {
+  repository(owner: "owner", name: "my-lib") {
+    f0: object(expression: "{after}:docs.toml") { ... on Blob { text isBinary isTruncated } }
+    f1: object(expression: "{after}:README.md") { ... on Blob { text isBinary isTruncated } }
+  }
+}
+```
+
+* Aliases are generated (`f0`, `f1`, ...) and mapped back to their paths by `FetchFiles`, since a path is not a valid
+  GraphQL name; each path is escaped as a GraphQL string inside its expression.
+* An alias that resolves to `null` is `FileMissing`. Everywhere this RFC says a file fetch returned 404, it means
+  `FileMissing`.
+* A blob with `isBinary` or `isTruncated` set is `FileUnreadable`, since a doc must be Markdown text.
+* A non 200 status, or a 200 response with a non empty `errors` field, is a failure of the whole request.
+* A query carries at most 100 aliases; more paths are split across queries sent one after another.
+
+The comparison stays on REST: `Repositories.CompareCommits` lists the changed `files` with their status and previous
+name, which GraphQL's comparison does not provide.
 
 Intermediate values passed between steps:
 
 ```go
 // The project settings and node tree read from docs.toml, resolved against the cached repo and the comparison.
 type DocsConfig struct {
-	FullName    string    // owner/name of the pushed repo, used for GitHub API requests
+	Owner       string    // the pushed repo's owner login, event.Repo.Owner.Login, used for GitHub API requests
+	Name        string    // the pushed repo's name, event.Repo.Name, used for GitHub API requests
 	SHA         string    // the commit docs.toml was read at, event.After
 	Title       string
 	SVG         string
-	ReadMe      []byte    // contents of README.md at SHA, fetched alongside docs.toml; nil when it returned 404
+	ReadMe      []byte    // contents of README.md at SHA, fetched alongside docs.toml; nil when missing or unreadable
 	Sections    []DocNode // every table up to depth 3, in docs.toml order
 
 	// The new, outdated, and unfrozen paths to fetch at SHA (every referenced path when the comparison cannot be trusted),
@@ -432,7 +458,7 @@ type DocNode struct {
 	CachedPath string    // the cached counterpart's path, empty when never ingested
 	Frozen     bool      // invalid with a cached counterpart: keeps its cached fields, its children are reconciled normally
 	Skipped    bool      // invalid with no cached counterpart: left out with its whole subtree
-	Missing    bool      // Path is known not to exist: removed in the comparison or 404 on fetch
+	Missing    bool      // Path is known not to exist or not to be text: removed in the comparison, or missing or unreadable on fetch
 	Children   []DocNode // in docs.toml order
 }
 ```
@@ -480,23 +506,24 @@ func (r *Repos) Set(ctx context.Context, event *github.PushEvent) error
 
 #### Process zero
 
-1. Read the cached `Repo` for `event.Repo.ID` from the in memory cache; `S` is its `LastIngestedSHA`, or empty if the
-   repo is not cached. On a restart, read it from Redis (`HGET repos {Repo.ID}`) instead, since the local cache may not
-   have caught up with the push that committed first; a missing entry on a restart means a deep clean committed first,
-   so stop.
-2. In parallel fetch `docs.toml` and `README.md` at `event.After`, and, if `S` is not empty, compare `S...event.After`.
-   A restart reuses the files already fetched, since `event.After` has not changed, and only compares again.
-3. Classify the comparison. **Docs** decides which paths `reconcileDocsConfig` puts in `UpdatePaths` and which nodes
-   it marks `Missing`; **Commits** decides where process two reads commits from.
+Read the cached `Repo` for `event.Repo.ID` from the in-memory cache (`S` is its `LastIngestedSHA`), or empty if the repo is not cached.
+On a restart, read it from Redis (`HGET repos {Repo.ID}`) instead, since the local cache may not
+have caught up with the push that committed first (a missing entry on a restart means a deep clean committed first).
+
+In parallel fetch `docs.toml` and `README.md` at `event.After` in one GraphQL request, and, if `S` is not empty, compare
+`S...event.After` through the REST API.
+A restart reuses the files already fetched, since `event.After` has not changed, and only compares again.
+
+Classify the comparison. **Docs** decides which paths `reconcileDocsConfig` puts in `UpdatePaths` and which nodes
+it marks `Missing`; **Commits** decides where process two reads commits from.
 
 ```mermaid
 flowchart LR
 	push([push event]) --> cached["read cached Repo<br/>S = LastIngestedSHA, or empty"]
 
 	subgraph parallel ["In Parallel"]
-		docs[fetch docs.toml]
-		readme[fetch README.md]
-		compare["compare S...After<br/>only when S is not empty"]
+		files["fetch docs.toml and README.md<br/>one GraphQL request"]
+		compare["compare S...After (REST)<br/>only when S is not empty"]
 	end
 
 	cached --> parallel
@@ -535,6 +562,22 @@ since `PushedAt` has one second resolution. A repo cached before `LastPushedAt` 
 
 #### Validation
 
+File level errors fail the whole push early:
+
+* `docs.toml` is not valid TOML, or is unreadable (binary, or too large for GraphQL to return inline).
+* on the first ingest, `README.md` does not exist. After the first ingest, a missing `README.md` freezes the project
+  page insteaxd.
+
+Node level errors make one chapter or section invalid. A warning is logged, the rest of the tree is ingested
+normally, and the invalid node is [[0001-github-doc-parsing-and-caching#Node identity and frozen nodes|frozen]] if it was ingested before, or skipped if it is new:
+
+* The table name or `segment` is not a slug.
+* A section has no `path`, or any `path` does not end in `.md`.
+* The `path` points to a file that does not exist at `after`, or that is unreadable.
+* Two siblings resolve to the same segment (both siblings are invalid).
+
+---
+
 1. If `docs.toml` returned 404:
 	- If `S` is not empty and the comparison reported `ahead` or `diverged`, or returned 404, the file existed at the
 	  last ingest, so run the [[0001-github-doc-parsing-and-caching#Deep clean|deep clean]] and stop.
@@ -545,11 +588,12 @@ since `PushedAt` has one second resolution. A repo cached before `LastPushedAt` 
 	  the next push retries.
 	- Otherwise the repo was never eligible, stop.
 
-2. Parse `docs.toml` into `DocsConfig`. A TOML syntax error logs a warning and stops.
+2. Parse `docs.toml` into `DocsConfig`. A TOML syntax error, or an unreadable `docs.toml`, logs a warning and stops.
    Node level errors mark the node invalid with a warning; process one decides whether it is frozen or skipped.
 3. Check the `README.md` fetch:
-	- 404 and the repo is not cached: log a warning and stop, since there is no project page to keep.
-	- 404 and the repo is cached: log a warning and leave `DocsConfig.ReadMe` nil, so the project page keeps its cached HTML.
+	- 404 or unreadable and the repo is not cached: log a warning and stop, since there is no project page to keep.
+	- 404 or unreadable and the repo is cached: log a warning and leave `DocsConfig.ReadMe` nil, so the project page
+	  keeps its cached HTML.
 	- Found: keep the contents in `DocsConfig.ReadMe` so process one renders them without a second request.
 
 Stopping at any point in this step writes nothing and leaves `Repo.LastIngestedSHA` unchanged, which freezes the repo's
@@ -565,7 +609,7 @@ var (
 // Parses docs.toml in table order, resolves it against cached, and marks it from the comparison: nodes with a parse time
 // error are Frozen when cached and Skipped with their subtree when not, unchanged paths the comparison reports removed
 // are Missing, and UpdatePaths lists the paths to fetch.
-func reconcileDocsConfig(data []byte, event *github.PushEvent, cached *Repo, comp *github.CommitsComparison, compErr error) (*DocsConfig, error)
+func reconcileDocsConfig(docsToml File, event *github.PushEvent, cached *Repo, comp *github.CommitsComparison, compErr error) (*DocsConfig, error)
 ```
  
 #### Process one
@@ -578,10 +622,10 @@ func reconcileDocsConfig(data []byte, event *github.PushEvent, cached *Repo, com
 	
 	`reconcileDocsConfig` lists every **new** and **outdated** path, outside Skipped subtrees, in `DocsConfig.UpdatePaths`.
 
-3. Fetch and render every **new** and **outdated** path concurrently at `event.After`.
+3. Fetch every **new** and **outdated** path at `event.After` in one GraphQL request, then render them.
    Children are fetched alongside their parents rather than after them; fetching a child of a node that turns out to be
-   skipped wastes a request but keeps the fetch to one round trip.
-4. A node is `Missing` if its path's fetch returned 404 (marked by `fetchDocs`), or if its path is **unchanged** and
+   skipped wastes part of the response but keeps the fetch to one round trip.
+4. A node is `Missing` if its path's fetch returned 404 or was unreadable (marked by `fetchDocs`), or if its path is **unchanged** and
    the comparison's **Docs** result is **from `files`** and lists it as removed (marked by `reconcileDocsConfig`).
    A node is invalid if it has a parse time error or a missing path.
 5. Build the effective tree from the parsed tree, keeping its order. An invalid node with a cached counterpart keeps
@@ -618,8 +662,8 @@ flowchart LR
 	classify -->|"path is in both and changed per Docs,<br/>or is the path of a node that became unfrozen"| pathOutdated[outdated]
 	classify -->|otherwise| pathUnchanged[unchanged]
 
-	pathNew & pathOutdated --> fetch["fetch and render UpdatePaths<br/>concurrently at After"]
-	fetch --> missing["mark Missing<br/>fetch 404, or unchanged<br/>and removed in files"]
+	pathNew & pathOutdated --> fetch["fetch UpdatePaths at After<br/>in one GraphQL request, render"]
+	fetch --> missing["mark Missing<br/>fetch 404 or unreadable, or<br/>unchanged and removed in files"]
 	pathUnchanged --> missing
 
 	missing --> invalid{"node invalid?<br/>parse error or Missing"}
@@ -648,24 +692,25 @@ func (a *App) githubPushEvent(w http.ResponseWriter, r *http.Request)
 // Inline, in order:
 //   1. read cached and S (its LastIngestedSHA, empty when not cached) under mu.RLock, or from Redis on a restart,
 //      stopping if the repo is gone; restarts begin here
-//   2. in parallel FetchFile docs.toml and README.md and, when S is not empty, Compare S...After; a restart reuses
-//      the fetched files and only compares
+//   2. in parallel FetchFiles docs.toml and README.md in one GraphQL request and, when S is not empty, Compare
+//      S...After through REST; a restart reuses the fetched files and only compares
 //   3. stop if the comparison is behind or identical, or if it is diverged or failed with a 5xx or 404 and
 //      cached.LastPushedAt is not before event.Repo.PushedAt, before anything can act on a stale After
 //   4. docs.toml 404: when S is not empty, dropFromCache if the comparison is ahead or diverged or returned 404,
 //      otherwise fail (a failed comparison cannot rule out a stale After); when S is empty, stop
-//   5. reconcileDocsConfig; ErrDocsSyntax logs a warning and stops, ErrCompare fails
-//   6. README.md 404: stop when cached is nil, otherwise leave cfg.ReadMe nil; when found, store the bytes in
-//      cfg.ReadMe
+//   5. docs.toml unreadable: log a warning and stop; otherwise reconcileDocsConfig, where ErrDocsSyntax logs a
+//      warning and stops and ErrCompare fails
+//   6. README.md missing or unreadable: stop when cached is nil, otherwise leave cfg.ReadMe nil; when found, store
+//      the bytes in cfg.ReadMe
 //   7. run process one and process two concurrently, waiting for both even when one fails and returning their errors joined
 //      process one: fetchDocs, buildRepo, commitDocs; Superseded stops, Overtaken restarts at 1, up to 3 times
 //      process two: pick comp.Commits, or event.Commits when S is empty, the comparison diverged, or it failed with a 5xx
 //      or 404, convert with fromComparisonCommit or fromPushCommit, then setCommits
 func (r *Repos) Set(ctx context.Context, event *github.PushEvent) error
 
-// Fetches and renders every path in cfg.UpdatePaths at cfg.SHA concurrently, using cfg.ReadMe for README.md
-// instead of a request (skipping it when nil, so it keeps its cached HTML), and marks the nodes of every path that
-// returned 404 Missing once all fetches finish.
+// Fetches every path in cfg.UpdatePaths at cfg.SHA through one FetchFiles call and renders them, using cfg.ReadMe
+// for README.md instead of fetching it again (skipping it when nil, so it keeps its cached HTML), and marks the nodes
+// of every missing or unreadable path Missing.
 func (r *Repos) fetchDocs(ctx context.Context, cfg *DocsConfig) (html map[string]string, err error)
 
 // Builds the repo to store at event.After from cfg in docs.toml order: a Missing node with a cached counterpart is frozen
@@ -762,11 +807,11 @@ The local cache keeps two maps, updated together under the same lock: `map[int64
 matching how Redis keys, pub/sub messages, and commits identify a repo, and `map[string]int64` from `Repo.Name` to
 `Repo.ID`, used only to resolve the first URL segment. `syncLocalCache` changes in three ways:
 
-* when `HGET repos {Repo.ID}` finds nothing (a deep clean), the repo and its name are removed from the cache instead of
-  logging a warning;
-* every reloaded repo gets its `DocRoutes` derived before it is stored, under the same lock, so a request never sees a
-  tree and doc routes from different pushes;
-* a reloaded repo replaces the entry with the same `Repo.ID`; if its name changed, the old name is read from the
+* When `HGET repos {Repo.ID}` finds nothing (a deep clean), the repo and its name are removed from the cache instead of
+  logging a warning.
+* Every reloaded repo gets its `DocRoutes` derived before it is stored, under the same lock, so a request never sees a
+  tree and doc routes from different pushes.
+* A reloaded repo replaces the entry with the same `Repo.ID`;  if its name changed, the old name is read from the
   replaced entry and removed from the name map, so a rename takes effect as soon as the next successful push rewrites
   the `Repo` JSON. Old names stop resolving; cached HTML is untouched because it is keyed by ID.
 
@@ -784,7 +829,7 @@ The sidebar is a shell that stays on the page while the doc beside it changes, u
   the current entry.
 * Partial and full responses share a URL, so every docs response sends `Vary: HX-Request` to keep a cache from serving
   a fragment as a full page.
-
+	eew
 A sidebar rendered before a push stays on the page after it. A link whose page was since removed misses `DocRoutes`
 and redirects to `/{repo name}`, which htmx follows as a full page load with a fresh sidebar.
 
@@ -793,8 +838,7 @@ Pages are served at `/{repo name}/{table.segment}/{table.table.segment}/{table.t
 1. Look up the first segment in the name map, then the `Repo` by ID. An unknown name is a 404.
 2. Look up the remaining segments, joined with `/`, in `Repo.DocRoutes`; no segments is `""`, the project page.
    A miss (no such segment, a heading only chapter, or too many segments) redirects to `/{repo name}`.
-3. `HGET {Repo.ID}:docs {path}` and serve the HTML; a full page load also renders the sidebar from the repo resolved
-   in step 1.
+3. `HGET {Repo.ID}:docs {path}` and serve the HTML; a full page load also renders the sidebar from the repo resolved in step 1.
 
 ```go
 var (
@@ -907,9 +951,11 @@ To resolve before implementation:
   `WEBHOOK_SECRET`; go-github's `github.ValidatePayload(r, secret)` performs the same check and returns the body,
   so what remains is deciding whether to require it and confirming it runs before the 202.
 * **GitHub API authentication and rate limits**: which token the server uses (a personal access token or a GitHub App),
-  how it is configured, and what happens when the authenticated limit of 5,000 requests an hour is reached
-  (today a rate limit is an ordinary failure that the next push retries; go-github reports it as
-  `*github.RateLimitError`, so it can be told apart if needed).
+  how it is configured, and what happens when a limit is reached. REST (the comparison) allows 5,000 requests an hour,
+  and GraphQL (file fetches) has its own budget of 5,000 points an hour, where a file query costs about 1 point.
+  The GraphQL API rejects every unauthenticated request, so the token is required, not optional.
+  Today a rate limit is an ordinary failure that the next push retries; go-github reports a REST one as
+  `*github.RateLimitError`, so it can be told apart if needed.
 * **Markdown renderer**: whether `renderMarkdown` uses `pkg/flavor` or an existing library, and which GitHub Flavored
   Markdown extensions it supports (the legacy system used comrak with tables, task lists, footnotes, autolinks,
   strikethrough, and line numbered code fences).
@@ -926,6 +972,8 @@ To resolve during implementation:
 * **Retry cap and timeout**: 3 restarts after an `Overtaken` commit and a 60 second background timeout are starting
   values; adjust them once real ingestion times are known.
 * **Blacklist contents**: the exact set of repo names reserved for site routes.
+* **GraphQL alias cap**: 100 aliases per query is a starting value; adjust it if large queries hit GitHub's query
+  limits or timeouts.
 
 Out of scope:
 

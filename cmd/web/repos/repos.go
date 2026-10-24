@@ -35,11 +35,12 @@ const (
 	README_PATH      = "README.md"
 
 	// Starting values from the RFC; adjust once real ingestion times are known.
-	MAX_RESTARTS       = 3                   // Overtaken restarts before Set fails
-	TX_RETRIES         = 3                   // WATCH aborts retried inside one transaction
-	COMPARE_FILE_LIMIT = 300                 // a comparison with this many files may be truncated
-	MAX_DOC_DEPTH      = 3                   // chapter, section, subsection
-	COMMIT_RETENTION   = 90 * 24 * time.Hour // commits older than this are pruned from the log
+	MAX_RESTARTS        = 3                   // Overtaken restarts before Set fails
+	TX_RETRIES          = 3                   // WATCH aborts retried inside one transaction
+	COMPARE_FILE_LIMIT  = 300                 // a comparison with this many files may be truncated
+	MAX_DOC_DEPTH       = 3                   // chapter, section, subsection
+	COMMIT_RETENTION    = 90 * 24 * time.Hour // commits older than this are pruned from the log
+	GRAPHQL_ALIAS_LIMIT = 100                 // aliased fields per GraphQL query; more paths are split across queries
 )
 
 var (
@@ -50,7 +51,7 @@ var (
 // The local cache of every repo and the commit log, synced with Redis by syncLocalCache.
 type Repos struct {
 	client      Client               // Redis
-	github      Github               // GitHub REST API calls used by ingestion
+	github      Github               // GitHub API calls used by ingestion: GraphQL file fetches, REST comparisons
 	repoCache   RepoCache            // Repo.ID -> repo
 	names       map[string]int64     // Repo.Name -> Repo.ID, used only to resolve the first URL segment
 	commitCache []ConventionalCommit // newest to oldest
@@ -102,7 +103,7 @@ func (r *redisClient) ZRangeArgs(ctx context.Context, z redis.ZRangeArgs) *redis
 type Repo struct {
 	ID              int64        `json:"id"`                // immutable GitHub repo ID
 	Name            string       `json:"name"`              // GitHub repo name, the first URL segment
-	FullName        string       `json:"full_name"`         // owner/name, used for GitHub API requests
+	FullName        string       `json:"full_name"`         // owner/name, as GitHub reports it
 	Title           string       `json:"title"`             // [project].title, or Name with the first character capitalized
 	Description     string       `json:"description"`       // GitHub repo description
 	SVG             string       `json:"svg"`               // [project].svg
