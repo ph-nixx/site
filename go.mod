@@ -3,8 +3,10 @@ module github.com/ph-nixx/site
 go 1.27.1
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/google/go-github/v91 v91.0.0
 	github.com/redis/go-redis/v9 v9.22.0
+	github.com/yuin/goldmark v1.8.6
 )
 
 require (

@@ -277,6 +277,9 @@ A slug matches `^[a-z0-9]+(-[a-z0-9]+)*$`. Depth is determined by the degree a t
 
 A node is identified by its table path, the chain of table names in square brackets (e.g. `[guides.database]`).
 Renaming a table therefore removes one node and adds another.
+The cached tree stores each node's table path as `DocSection.Key` (e.g. `"guides.database"`), since none of the
+other stored fields can stand in for it: a node's path, segment, title, and position can all change while it keeps
+its identity, and its table name is lost once `segment` overrides it.
 
 **Removed**: a cached node whose table path no longer appears in `docs.toml` is removed together with all of its
 descendants, and their paths fall into **old**. Moving a table under another parent, including one that would put it
@@ -336,6 +339,7 @@ type Repo struct {
 
 // A chapter, section, or subsection parsed from docs.toml.
 type DocSection struct {
+	Key         string       `json:"key"`              // table key path, e.g. "install.macos"; matches DocNode.Key across pushes
 	Frozen      bool         `json:"frozen,omitempty"` // kept from the last ingest because the node is currently invalid
 	Segment     string       `json:"segment"`          // this node's URL segment, without its ancestors
 	Title       string       `json:"title"`            // sidebar text
@@ -441,7 +445,7 @@ type DocsConfig struct {
 	SHA         string    // the commit docs.toml was read at, event.After
 	Title       string
 	SVG         string
-	ReadMe      []byte    // contents of README.md at SHA, fetched alongside docs.toml; nil when missing or unreadable
+	ReadMe      []byte    // contents of README.md at SHA, fetched alongside docs.toml; nil when missing, unreadable, or unchanged
 	Sections    []DocNode // every table up to depth 3, in docs.toml order
 
 	// The new, outdated, and unfrozen paths to fetch at SHA (every referenced path when the comparison cannot be trusted),
@@ -451,15 +455,15 @@ type DocsConfig struct {
 
 // A node of the docs.toml tree as ingestion sees it; buildRepo turns the kept ones into DocSections.
 type DocNode struct {
-	Key        string    // table key path, e.g. "install.macos"; the node's identity across pushes
-	Segment    string    // from docs.toml, or the cached segment while Frozen
-	Title      string    // from docs.toml, or the cached title while Frozen
-	Path       string    // from docs.toml, as written
-	CachedPath string    // the cached counterpart's path, empty when never ingested
-	Frozen     bool      // invalid with a cached counterpart: keeps its cached fields, its children are reconciled normally
-	Skipped    bool      // invalid with no cached counterpart: left out with its whole subtree
-	Missing    bool      // Path is known not to exist or not to be text: removed in the comparison, or missing or unreadable on fetch
-	Children   []DocNode // in docs.toml order
+	Key      string      // table key path, e.g. "install.macos"; the node's identity across pushes
+	Segment  string      // from docs.toml, or the cached segment while Frozen
+	Title    string      // from docs.toml, or the cached title while Frozen
+	Path     string      // from docs.toml, as written
+	Cached   *DocSection // the cached node with the same Key, nil when never ingested
+	Frozen   bool        // invalid with a cached counterpart: keeps its cached fields, its children are reconciled normally
+	Skipped  bool        // invalid with no cached counterpart: left out with its whole subtree
+	Missing  bool        // Path is known not to exist or not to be text: removed in the comparison, or missing or unreadable on fetch
+	Children []DocNode   // in docs.toml order
 }
 ```
 
@@ -470,14 +474,17 @@ type DocNode struct {
 | `repos` | hash | `Repo.ID` to `Repo` JSON string |
 | `{Repo.ID}:docs` | hash | repo root relative file path to rendered HTML string |
 | `commits` | sorted set | `ConventionalCommit` JSON strings scored by `Timestamp` as Unix seconds |
-| `repos:updates` | pub/sub channel | `repos:{Repo.ID}` after a docs write or deep clean, `commits` after a commit log write |
+| `repos:updates` | pub/sub channel | `repos:{Repo.ID}` after a docs write or deep clean, `commits` after a commit log write that added or pruned a member |
 
 A commit is logged at most once because the same commit always serializes to the same JSON string:
 every `ConventionalCommit` field is derived from the commit itself or from the immutable `Repo.ID`, and `Timestamp` is
-always the committer date, whether it comes from the comparison or from the push event.
+always the committer date, whether it comes from the comparison or from the push event. `Timestamp` is stored in UTC,
+since `time.Time` JSON includes the zone offset and the two sources may report the same instant with different offsets.
 No field may ever be derived from the push (such as the time it was received), or the same commit would become two members.
 The repo name is not stored for the same reason, since a rename would change it; the commit log resolves it from
-`RepoID` through the local cache when it renders.
+`RepoID` through the local cache when it renders. A commit whose `RepoID` is not in the local cache is skipped rather
+than rendered without a name: it belongs to a repo that a deep clean removed, and was added after the deep clean read
+`commits` (see [[0001-github-doc-parsing-and-caching#Deep clean|Deep clean]]).
 
 ### Webhook
 
@@ -594,7 +601,9 @@ normally, and the invalid node is [[0001-github-doc-parsing-and-caching#Node ide
 	- 404 or unreadable and the repo is not cached: log a warning and stop, since there is no project page to keep.
 	- 404 or unreadable and the repo is cached: log a warning and leave `DocsConfig.ReadMe` nil, so the project page
 	  keeps its cached HTML.
-	- Found: keep the contents in `DocsConfig.ReadMe` so process one renders them without a second request.
+	- Found: keep the contents in `DocsConfig.ReadMe` when `README.md` is **new** or **outdated**, so process one renders
+	  them without a second request; an **unchanged** `README.md` leaves `ReadMe` nil and keeps its cached HTML, like any
+	  other unchanged page.
 
 Stopping at any point in this step writes nothing and leaves `Repo.LastIngestedSHA` unchanged, which freezes the repo's
 cached docs and commits until a later push passes validation and catches up from `S`.
@@ -609,7 +618,7 @@ var (
 // Parses docs.toml in table order, resolves it against cached, and marks it from the comparison: nodes with a parse time
 // error are Frozen when cached and Skipped with their subtree when not, unchanged paths the comparison reports removed
 // are Missing, and UpdatePaths lists the paths to fetch.
-func reconcileDocsConfig(docsToml File, event *github.PushEvent, cached *Repo, comp *github.CommitsComparison, compErr error) (*DocsConfig, error)
+func reconcileDocsConfig(docsToml, readMe File, event *github.PushEvent, cached *Repo, comp *github.CommitsComparison, compErr error) (*DocsConfig, error)
 ```
  
 #### Process one
@@ -651,8 +660,8 @@ func reconcileDocsConfig(docsToml File, event *github.PushEvent, cached *Repo, c
 	Only a push received no later than this one can cause a restart, and once this push commits, every such push still
 	running stops, so the loop ends on its own. The cap of 3 restarts is a safety net; exhausting it is a failure.
 
-9. Any error (a non 404 fetch failure, a rendering error, a Redis error, a timeout) is a failure: nothing is written and
-   the next push retries the work from `S`.
+9. Any error (a non 404 fetch failure, a Redis error, a timeout) is a failure: nothing is written and
+   the next push retries the work from `S`. Rendering cannot fail (see [[0001-github-doc-parsing-and-caching#Rendering|Rendering]]).
 
 ```mermaid
 flowchart LR
@@ -678,7 +687,7 @@ flowchart LR
 	commit -->|Committed| done([done])
 	commit -->|Superseded| stopSuperseded([stop: a later push already committed])
 	commit -->|"Overtaken, restarts left"| restart[["restart at Process zero step 1<br/>with the new S, read from Redis"]]
-	fetch & commit -.->|"3 restarts used, non 404 fetch, render,<br/>Redis error, or timeout"| failError(["log and stop: nothing is written,<br/>next push retries from S"])
+	fetch & commit -.->|"3 restarts used, non 404 fetch,<br/>Redis error, or timeout"| failError(["log and stop: nothing is written,<br/>next push retries from S"])
 ```
 
 ```go
@@ -700,8 +709,8 @@ func (a *App) githubPushEvent(w http.ResponseWriter, r *http.Request)
 //      otherwise fail (a failed comparison cannot rule out a stale After); when S is empty, stop
 //   5. docs.toml unreadable: log a warning and stop; otherwise reconcileDocsConfig, where ErrDocsSyntax logs a
 //      warning and stops and ErrCompare fails
-//   6. README.md missing or unreadable: stop when cached is nil, otherwise leave cfg.ReadMe nil; when found, store
-//      the bytes in cfg.ReadMe
+//   6. README.md missing or unreadable: stop when cached is nil; reconcileDocsConfig stores its bytes in cfg.ReadMe
+//      only when it is found and new or outdated, otherwise leaving it nil
 //   7. run process one and process two concurrently, waiting for both even when one fails and returning their errors joined
 //      process one: fetchDocs, buildRepo, commitDocs; Superseded stops, Overtaken restarts at 1, up to 3 times
 //      process two: pick comp.Commits, or event.Commits when S is empty, the comparison diverged, or it failed with a 5xx
@@ -723,6 +732,25 @@ func buildRepo(event *github.PushEvent, cfg *DocsConfig) Repo
 func pruneRepo(before, after *Repo) (old []string)
 ```
 
+#### Rendering
+
+Markdown is rendered with [goldmark](https://github.com/yuin/goldmark) and its `extension.GFM`, which covers the
+whole GitHub Flavored Markdown spec: tables, task lists, strikethrough, and autolinks. Raw HTML in a doc is omitted,
+since goldmark's unsafe mode stays off. goldmark is an interim choice; `pkg/flavor` replaces it once it is ready, and
+only the body of `intoHTML` changes.
+
+Rendering cannot fail. GFM has no invalid input: text that matches no other construct is a paragraph, and goldmark
+writing into a `bytes.Buffer` never returns a write error. `intoHTML` therefore returns only a string, and a push
+never fails because of its Markdown.
+
+Constructs GitHub renders outside the GFM spec (alerts, math, mermaid blocks, footnotes) are not supported yet and
+render as plain Markdown: an alert becomes an ordinary blockquote, a mermaid block a code block.
+
+```go
+// Renders a GitHub Flavored Markdown file to an HTML string.
+func intoHTML(md []byte) string
+```
+
 #### Process two
 
 1. Take commits from the source in the comparison's **Commits** result: the comparison's `commits`, or the push
@@ -730,8 +758,9 @@ func pruneRepo(before, after *Repo) (old []string)
    A truncated file list does not affect this, so a 300 file comparison still supplies the commits.
 2. Parse each into a `ConventionalCommit`; drop any commit whose message does not strictly follow the Conventional
    Commits specification. `distinct` is ignored: every commit in range is considered.
-3. `ZADD commits` every parsed commit, then `ZREMRANGEBYSCORE commits -inf {now - 90 days}`, then
-   `PUBLISH repos:updates commits`.
+3. `ZADD commits` every parsed commit with its `Timestamp` in UTC, then `ZREMRANGEBYSCORE commits -inf {now - 90 days}`,
+   then `PUBLISH repos:updates commits` only if the `ZADD` added a member or the prune removed one. Re-adding commits
+   that are already logged, which most pushes do, changes nothing, so no instance is told to reload the commit log.
 
 Process two does not wait for process one. If process one later fails, `S` has not moved, so the next push compares from `S`
 again and re-adds the same commits, which leaves the sorted set unchanged.
@@ -779,6 +808,13 @@ its own key to watch instead.
   `PUBLISH repos:updates commits`, then `EXEC`.
 
 Scanning `commits` is linear in its size, which the 90 day prune keeps small.
+
+The deep clean cannot guarantee that no commit of the repo outlives it. Another push to the same repo can still be in
+process two, which does not check the SHA, so its `ZADD commits` can land after the `ZRANGE` or after the `EXEC`.
+Watching `commits` as well would not close the gap, since the `ZADD` can still follow the `EXEC`. Those members are left
+in `commits` with a `RepoID` no repo has, so the commit log skips them when it renders, and the 90 day prune removes
+them eventually. If the repo is later ingested again it keeps the same `Repo.ID`, so the commits reappear in the log,
+which is correct since they are real commits of that repo.
 
 ```go
 // How a commit transaction ended.
@@ -940,6 +976,8 @@ It solved the same problem with a different set of trade offs, and most of this 
 
 * **Heading extraction**: the legacy renderer extracted each page's h1 and h2 headings into a nav tree and cached
   them alongside the HTML. This RFC caches only the HTML string.
+* **Footnotes and line numbered code fences**: the legacy renderer supported both; this RFC renders the GFM spec only.
+  Syntax highlighting would also be the one extension that could make rendering fail.
 * **Per repo commit logs**: only the global `commits` sorted set remains.
 
 ## Unresolved questions
@@ -956,11 +994,9 @@ To resolve before implementation:
   The GraphQL API rejects every unauthenticated request, so the token is required, not optional.
   Today a rate limit is an ordinary failure that the next push retries; go-github reports a REST one as
   `*github.RateLimitError`, so it can be told apart if needed.
-* **Markdown renderer**: whether `renderMarkdown` uses `pkg/flavor` or an existing library, and which GitHub Flavored
-  Markdown extensions it supports (the legacy system used comrak with tables, task lists, footnotes, autolinks,
-  strikethrough, and line numbered code fences).
 * **Commit timestamp source**: confirm that the push payload's `commits[].timestamp` equals the comparison's
-  `commit.committer.date` for the same commit; if it does not, the fallback path must use the same source as the
+  `commit.committer.date` for the same commit as an instant; a different zone offset is harmless, since `setCommits`
+  stores every `Timestamp` in UTC. If the instants differ, the fallback path must use the same source as the
   comparison or a commit can be logged twice.
 * **Repo rename**: if a Github repo is renamed how will the project URL and cached values be adjusted.
 * **`pushed_at` semantics**: confirm that `repository.pushed_at` in a push payload is the time of that push, not the
@@ -974,6 +1010,15 @@ To resolve during implementation:
 * **Blacklist contents**: the exact set of repo names reserved for site routes.
 * **GraphQL alias cap**: 100 aliases per query is a starting value; adjust it if large queries hit GitHub's query
   limits or timeouts.
+* **README.md special casing**: `README.md` should ideally be ingested like any other Markdown file, but this design
+  handles it through a separate path at almost every step: it is fetched in process zero alongside `docs.toml`
+  rather than through `UpdatePaths`, carried in `DocsConfig.ReadMe` rather than as a node, classified as new or
+  outdated by its own rule in `reconcileDocsConfig`, frozen by a nil `ReadMe` rather than as a `Frozen` node, and
+  excluded from **old** by name. Each special case is another place for the two paths to drift apart.
+  One option is to model the project page as an implicit root `DocNode` with `Path` set to `README.md`, so that
+  classification, fetching, freezing, and pruning treat it like any other node; the root would never be removed,
+  since only a deep clean removes the project page. The one rule that cannot fold in is that `README.md` must exist
+  on the first ingest, which validation would still check from the process zero fetch.
 
 Out of scope:
 
@@ -987,6 +1032,9 @@ Out of scope:
   closing the gap where a renamed repo's new URL is a 404 until its next push.
 * **Heading extraction**: restore the legacy system's h1 and h2 extraction so each page can render an on page
   table of contents; the headings would be cached alongside the HTML.
+* **GitHub rendering extras**: alerts (`> [!NOTE]`), math, and mermaid blocks, added to `intoHTML` once the simple
+  version ships, so docs render as they do on github.com. None of them changes ingestion, only the cached HTML; pages
+  already cached pick them up when their files next change.
 * **Frozen indicator**: a display only flag set when validation fails and cleared on the next successful ingest,
   so the project page can show that its docs are out of date and why.
 * **Coalescing work queue**: the webhook handler records the latest `after` per repo in Redis and a worker on either

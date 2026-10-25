@@ -118,6 +118,7 @@ type Repo struct {
 
 // A chapter, section, or subsection parsed from docs.toml.
 type DocSection struct {
+	Key         string       `json:"key"`              // table key path, e.g. "install.macos"; matches DocNode.Key across pushes
 	Frozen      bool         `json:"frozen,omitempty"` // kept from the last ingest because the node is currently invalid
 	Segment     string       `json:"segment"`          // this node's URL segment, without its ancestors
 	Title       string       `json:"title"`            // sidebar text
