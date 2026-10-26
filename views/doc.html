@@ -14,7 +14,7 @@
 </head>
 
 <body>
-	{{template "nav" .Repos}}
+	{{template "nav" .Nav}}
 	<!-- the sidebar, then the reading column; below 860px one column, with the sidebar as a disclosure above the page.
 	     From 860px the sidebar starts at the window edge and carries the nav's gutter as its own padding, so its text
 	     lines up under the breadcrumb, each row keeps room for its focus ring inside the scroll clip, and the whole
@@ -30,7 +30,7 @@
 				</summary>
 				<nav aria-label="Docs" class="max-h-[60vh] overflow-y-auto px-1 pt-s4 pb-s5 min-[860px]:pl-[calc(var(--spacing-gutter)-var(--spacing-s3))] min-[860px]:pr-s5 min-[860px]:max-h-none min-[860px]:overflow-visible min-[860px]:pt-s5 min-[860px]:pb-s7">
 					<a href="/{{.Repo.Name}}" hx-get="/{{.Repo.Name}}" hx-target="#doc" hx-push-url="true" data-route=""
-						class="flex items-center gap-s3 px-s3 pt-[2px] pb-s4 rounded-sm text-lg font-medium text-fg no-underline transition-colors duration-[var(--dur)] ease-[var(--ease-out)] hover:text-link focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-bg),0_0_0_4px_var(--color-focus)]">
+						class="flex items-center gap-s3 px-s3 pt-[2px] pb-s4 rounded-sm text-lg font-medium text-fg no-underline transition-colors duration-[var(--dur)] ease-[var(--ease-out)] hover:text-link aria-[current=page]:text-link aria-[current=page]:cursor-default focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-bg),0_0_0_4px_var(--color-focus)]">
 						{{if .Repo.SVG}}<span aria-hidden="true" style="mask-image: url(/static/icons/{{.Repo.ID}})"
 							class="w-[18px] h-[18px] shrink-0 bg-current [mask-size:contain] [mask-repeat:no-repeat] [mask-position:center]"></span>{{else}}<svg aria-hidden="true" class="w-[18px] h-[18px] shrink-0">
 							<use href="#LuPackage"></use>

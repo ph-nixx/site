@@ -22,7 +22,7 @@ type docPage struct {
 	Repo    *repos.Repo
 	HTML    template.HTML // rendered by goldmark with raw HTML omitted, so it is emitted unescaped
 	Sidebar []sidebarEntry
-	Repos   []*repos.Repo // every repo, for the project menu in the site nav
+	Nav     navData
 }
 
 // Serves a docs page at /{repo name}/{segments...}: the doc's HTML alone for an HX-Request, otherwise the full page
@@ -79,5 +79,5 @@ func (a *App) doc(w http.ResponseWriter, r *http.Request) {
 		return built
 	}
 	all, _ := a.repos.Get()
-	a.render(w, r, "doc", docPage{Repo: repo, HTML: template.HTML(html), Sidebar: entries("", repo.DocSections), Repos: all})
+	a.render(w, r, "doc", docPage{Repo: repo, HTML: template.HTML(html), Sidebar: entries("", repo.DocSections), Nav: navData{Repos: all, Current: name}})
 }

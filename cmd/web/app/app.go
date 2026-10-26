@@ -25,6 +25,13 @@ type App struct {
 	webhookSecret []byte // GITHUB_WEBHOOK_SECRET, read once by New; signs every push delivery
 }
 
+// The data the nav template renders: every repo for the project menu, and the first URL segment, which names the
+// project being viewed ("" on the home page).
+type navData struct {
+	Repos   []*repos.Repo
+	Current string
+}
+
 // funcMap exposes helpers to the HTML templates.
 var funcMap = template.FuncMap{"colSpan": colSpan}
 

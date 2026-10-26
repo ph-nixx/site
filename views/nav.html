@@ -19,14 +19,14 @@
 			</button>
 			<div id="nav-menu" popover="" aria-label="Menu"
 				class="m-0 p-s2 min-w-[248px] max-h-[min(60vh,420px)] overflow-auto text-fg bg-surface-2 border border-border rounded-md fixed inset-auto top-[46px] right-s3 min-[860px]:right-[calc(var(--spacing-gutter)-var(--spacing-s4)+var(--spacing-s3))] opacity-0 -translate-y-1 transition-discrete transition-[opacity,transform,overlay,display] duration-[var(--dur)] ease-[var(--ease-out)] starting:opacity-0 starting:-translate-y-1 [&:popover-open]:opacity-100 [&:popover-open]:translate-y-0">
-				{{if .}}
+				{{if .Repos}}
 				<p class="px-[10px] py-[4px] font-mono text-xs tracking-[0.08em] uppercase text-fg-subtle">Projects</p>
 				<ul
 					class="flex flex-col gap-[1px] list-none [&:not(:has(.repo-icon))_a]:grid-cols-1 [&:not(:has(.repo-icon))_span]:col-start-1">
-					{{range $r := .}}
+					{{range $r := .Repos}}
 					<li>
-						<a href="/{{$r.Name}}" aria-current="false"
-							class="grid grid-cols-[16px_1fr] items-center gap-[8px] px-[10px] py-[5px] rounded-[6px] text-fg-muted text-sm no-underline transition-colors duration-[var(--dur)] ease-[var(--ease-out)] hover:bg-overlay-hover hover:text-fg focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-surface-2),0_0_0_4px_var(--color-focus)]">
+						<a href="/{{$r.Name}}" aria-current="{{if eq $r.Name $.Current}}page{{else}}false{{end}}"
+							class="grid grid-cols-[16px_1fr] items-center gap-[8px] px-[10px] py-[5px] rounded-[6px] text-fg-muted text-sm no-underline transition-colors duration-[var(--dur)] ease-[var(--ease-out)] hover:bg-overlay-hover hover:text-fg aria-[current=page]:bg-overlay-hover aria-[current=page]:text-fg focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-surface-2),0_0_0_4px_var(--color-focus)]">
 							{{if $r.SVG}}<span aria-hidden="true" style="mask-image: url(/static/icons/{{$r.ID}})"
 								class="repo-icon col-start-1 w-[15px] h-[15px] bg-current [mask-size:contain] [mask-repeat:no-repeat] [mask-position:center]"></span>{{end}}
 							<span
@@ -63,4 +63,5 @@
 		</div>
 	</nav>
 </div>
+<script type="module" src="/static/js/breadcrumb.js"></script>
 {{end}}

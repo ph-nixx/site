@@ -21,11 +21,12 @@ type logEntry struct {
 type homePage struct {
 	Repos []*repos.Repo
 	Log   []logEntry // the newest LOG_ROWS commits
+	Nav   navData
 }
 
 func (a *App) home(w http.ResponseWriter, r *http.Request) {
 	all, _ := a.repos.Get()
-	page := homePage{Repos: all}
+	page := homePage{Repos: all, Nav: navData{Repos: all}}
 	for _, c := range a.repos.Commits() {
 		if len(page.Log) == LOG_ROWS {
 			break
