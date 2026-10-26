@@ -16,11 +16,11 @@
 
 <body>
 	<main>
-		{{template "nav" .}}
+		{{template "nav" .Repos}}
 		{{template "hero" .}}
 		<div class="home-content nav-align flex flex-col pt-s3">
-			{{template "project_catalog" .}}
-			{{template "build_log" .}}
+			{{template "project_catalog" .Repos}}
+			{{template "build_log" .Log}}
 			<footer role="contentinfo" aria-label="Footer"
 				class="py-s5 flex items-center justify-between gap-s5 flex-wrap">
 				<p class="inline-flex items-center gap-s3 text-xs text-fg-subtle">

@@ -14,7 +14,11 @@ import (
 	"github.com/google/go-github/v91/github"
 	"github.com/redis/go-redis/v9"
 	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
+	extast "github.com/yuin/goldmark/extension/ast"
+	"github.com/yuin/goldmark/renderer"
+	"github.com/yuin/goldmark/util"
 )
 
 // Owns the whole ingestion of one push the handler accepted, from reading the cache to committing the result,
@@ -253,8 +257,46 @@ func pruneRepo(before, after *Repo) []string {
 	return old
 }
 
-// The GFM renderer behind intoHTML (built once).
-var markdown = goldmark.New(goldmark.WithExtensions(extension.GFM))
+// The GFM renderer behind intoHTML (built once), with tables wrapped for sideways scrolling.
+var markdown = goldmark.New(
+	goldmark.WithExtensions(extension.GFM),
+	goldmark.WithRendererOptions(renderer.WithNodeRenderers(util.Prioritized(tableScroller{}, 0))),
+)
+
+// Renders a GFM table inside a <div class="table-scroll">, so a table wider than the docs column scrolls sideways
+// instead of widening the page. It registers ahead of GFM's table renderer and delegates the table itself to it.
+type tableScroller struct{}
+
+// Registers the wrapping table renderer in place of GFM's, keeping GFM's for the table itself.
+func (tableScroller) RegisterFuncs(reg renderer.NodeRendererFuncRegisterer) {
+	var table renderer.NodeRendererFunc
+	extension.NewTableHTMLRenderer().RegisterFuncs(captureTable{&table, reg})
+	reg.Register(extast.KindTable, func(w util.BufWriter, src []byte, n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if entering {
+			_, _ = w.WriteString("<div class=\"table-scroll\">\n")
+		}
+		status, err := table(w, src, n, entering)
+		if !entering {
+			_, _ = w.WriteString("</div>\n")
+		}
+		return status, err
+	})
+}
+
+// Passes GFM's table renderer funcs through to the real registerer, except the table's own, which it keeps.
+type captureTable struct {
+	table *renderer.NodeRendererFunc
+	renderer.NodeRendererFuncRegisterer
+}
+
+// Keeps the func for tables and registers every other func unchanged.
+func (c captureTable) Register(kind ast.NodeKind, fn renderer.NodeRendererFunc) {
+	if kind == extast.KindTable {
+		*c.table = fn
+		return
+	}
+	c.NodeRendererFuncRegisterer.Register(kind, fn)
+}
 
 // Renders a GitHub Flavored Markdown file to an HTML string.
 func intoHTML(md []byte) string {

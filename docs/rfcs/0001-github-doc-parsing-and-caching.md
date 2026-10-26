@@ -768,8 +768,9 @@ func pruneRepo(before, after *Repo) (old []string)
 
 Markdown is rendered with [goldmark](https://github.com/yuin/goldmark) and its `extension.GFM`, which covers the
 whole GitHub Flavored Markdown spec: tables, task lists, strikethrough, and autolinks. Raw HTML in a doc is omitted,
-since goldmark's unsafe mode stays off. goldmark is an interim choice; `pkg/flavor` replaces it once it is ready, and
-only the body of `intoHTML` changes.
+since goldmark's unsafe mode stays off. Every table is wrapped in a `<div class="table-scroll">`, so a table wider
+than the docs column can scroll sideways instead of widening the page. goldmark is an interim choice; `pkg/flavor`
+replaces it once it is ready, and only the body of `intoHTML` changes.
 
 Rendering cannot fail. GFM has no invalid input: text that matches no other construct is a paragraph, and goldmark
 writing into a `bytes.Buffer` never returns a write error. `intoHTML` therefore returns only a string, and a push

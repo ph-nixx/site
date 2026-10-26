@@ -186,7 +186,7 @@ body {
   }
 }
 
-/* Skeleton shimmer + title scramble — ported from main.scss .pcatalog-skel/.bl-skel.
+/* Skeleton shimmer + title scramble — ported from main.scss .pcatalog-skel.
    Kept as component CSS rather than inline utilities: the nth-child pseudo-element
    keyframe sequencing here isn't expressible as Tailwind classes. */
 
@@ -297,68 +297,9 @@ body {
 .pcatalog-skel > ul > li > div > div:last-child > span:nth-child(1) { width: 65%; }
 .pcatalog-skel > ul > li > div > div:last-child > span:nth-child(2) { display: none; }
 
-.bl-skel {
-  list-style: none;
-  border-top: 1px solid var(--color-border);
-}
-.bl-skel > li { border-bottom: 1px solid var(--color-border); }
-.bl-skel > li:last-child { border-bottom: none; }
-.bl-skel > li > div {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-s3);
-  padding: var(--spacing-s4) var(--spacing-s3);
-}
-.bl-skel span {
-  display: block;
-  height: 13px;
-  border-radius: var(--radius-sm);
-  background: linear-gradient(100deg, var(--color-surface-2) 30%, var(--color-surface-3) 50%, var(--color-surface-2) 70%);
-  background-size: 200% 100%;
-  animation: skel-wave 2.8s linear infinite;
-}
-.bl-skel > li > div > span:nth-child(1) { width: 54px; flex-shrink: 0; }
-.bl-skel > li > div > span:nth-child(2) {
-  display: inline-flex;
-  width: 62px;
-  height: auto;
-  flex-shrink: 0;
-  background: none;
-  animation: none;
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  color: var(--color-border-strong);
-}
-.bl-skel > li > div > span:nth-child(2) > span {
-  width: 0.6em;
-  height: auto;
-  background: none;
-  border-radius: 0;
-  animation: none;
-  text-align: center;
-}
-.bl-skel > li > div > span:nth-child(2) > span::before {
-  content: "·";
-  animation-duration: 0.66s;
-  animation-timing-function: steps(1, end);
-  animation-iteration-count: infinite;
-}
-.bl-skel > li > div > span:nth-child(2) > span:nth-child(1)::before { animation-name: glyph-a; animation-delay: -0.05s; }
-.bl-skel > li > div > span:nth-child(2) > span:nth-child(2)::before { animation-name: glyph-c; animation-delay: -0.31s; }
-.bl-skel > li > div > span:nth-child(2) > span:nth-child(3)::before { animation-name: glyph-b; animation-delay: -0.12s; }
-.bl-skel > li > div > span:nth-child(2) > span:nth-child(4)::before { animation-name: glyph-d; animation-delay: -0.44s; }
-.bl-skel > li > div > span:nth-child(2) > span:nth-child(5)::before { animation-name: glyph-b; animation-delay: -0.22s; }
-.bl-skel > li > div > span:nth-child(3) { width: 58%; }
-.bl-skel > li:nth-child(2) > div > span:nth-child(3) { width: 44%; }
-.bl-skel > li:nth-child(3) > div > span:nth-child(3) { width: 66%; }
-.bl-skel > li:nth-child(4) > div > span:nth-child(3) { width: 39%; }
-.bl-skel > li:nth-child(5) > div > span:nth-child(3) { width: 52%; }
-
 @media (prefers-reduced-motion: reduce) {
   .pcatalog-skel span,
   .pcatalog-skel span::before,
-  .bl-skel span,
-  .bl-skel span::before,
   .doc {
     animation: none;
   }
@@ -499,13 +440,14 @@ body {
 
 .doc hr { border: 0; border-top: 1px solid var(--color-border); margin-block: var(--spacing-s6); }
 
-/* tables: a hairline grid with the header on a raised surface. goldmark emits a
-   bare table with no scrolling wrapper, so the table scrolls itself: as a block
-   it grows with its content up to the column, then scrolls sideways */
+/* tables: a hairline grid with the header on a raised surface. The table spans the column and the spare width is
+   shared between the columns, with each cell's text kept to its left edge. A table stays inside the column by
+   wrapping its cells: headers and first column code (usually a name) stay on one line, and code elsewhere may break
+   anywhere. When even that is too wide, as on a phone, the wrapper intoHTML puts around every table scrolls
+   sideways */
+.doc .table-scroll { overflow-x: auto; }
 .doc table {
-  display: block;
-  max-width: 100%;
-  overflow-x: auto;
+  width: 100%;
   border-collapse: collapse;
   font-size: var(--text-md);
 }
@@ -515,7 +457,9 @@ body {
   border-bottom: 1px solid var(--color-border);
 }
 .doc th { color: var(--color-fg); font-weight: 600; background: var(--color-surface-1); white-space: nowrap; }
-.doc td { color: var(--color-doc-body); vertical-align: top; }
+.doc td { min-width: 4.5rem; color: var(--color-doc-body); vertical-align: top; overflow-wrap: anywhere; }
+.doc td:first-child code { white-space: nowrap; }
+.doc td:not(:first-child) code { word-break: break-all; }
 .doc tr:last-child td { border-bottom: 0; }
 .doc tbody tr:hover td { background: rgba(237, 237, 237, 0.02); }
 

@@ -3,12 +3,14 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"html/template"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ph-nixx/site/cmd/web/repos"
 	"github.com/redis/go-redis/v9"
@@ -17,7 +19,8 @@ import (
 // mockClient is an in-memory repos.Client with a fixed hash and no commits,
 // whose subscription never delivers.
 type mockClient struct {
-	hash map[string]string
+	hash    map[string]string
+	commits []string // commits JSON, newest first, served by ZRangeArgs
 }
 
 func newMockClient(hash map[string]string) *mockClient {
@@ -46,7 +49,7 @@ func (f *mockClient) Subscribe(ctx context.Context, channels ...string) repos.Su
 
 func (f *mockClient) ZRangeArgs(ctx context.Context, z redis.ZRangeArgs) *redis.StringSliceCmd {
 	cmd := redis.NewStringSliceCmd(ctx, "zrange", z.Key)
-	cmd.SetVal([]string{})
+	cmd.SetVal(append([]string{}, f.commits...))
 	return cmd
 }
 
@@ -151,5 +154,61 @@ func TestIcon(t *testing.T) {
 		if rec := get(id, ""); rec.Code != http.StatusNotFound {
 			t.Errorf("id %q: status %d, want 404", id, rec.Code)
 		}
+	}
+}
+
+// The home page's build log lists the newest commits, each with its day, its repo's current name, its header, and a
+// link to it on GitHub, and says so when there are none.
+func Test_home_renders_the_build_log(t *testing.T) {
+	repo := repos.Repo{ID: 1, Name: "my-lib", FullName: "ph-nixx/my-lib"}
+	b, err := json.Marshal(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit := func(c repos.ConventionalCommit) string {
+		b, err := json.Marshal(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	day := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	tmpl := template.Must(template.New("").Funcs(funcMap).ParseGlob("../../../views/*.html"))
+	discard := slog.New(slog.DiscardHandler)
+
+	tests := []struct {
+		name    string
+		commits []string
+		want    []string
+	}{
+		{"commits", []string{
+			commit(repos.ConventionalCommit{ID: "abc123", RepoID: 1, Timestamp: day, Type: "feat", Scope: "docs", Breaking: true, Description: "add the pooling guide"}),
+			commit(repos.ConventionalCommit{ID: "def456", RepoID: 2, Timestamp: day, Type: "fix", Description: "of a repo no longer cached"}),
+		}, []string{"Oct 25", "my-lib", "feat(docs)!: add the pooling guide", `href="https://github.com/ph-nixx/my-lib/commit/abc123"`}},
+		{"no commits", nil, []string{"No commits in the last 90 days."}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := newMockClient(map[string]string{"1": string(b)})
+			client.commits = tt.commits
+			r, err := repos.New(t.Context(), client, nil, discard)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec := httptest.NewRecorder()
+			(&App{Logger: discard, repos: r, tmpl: tmpl}).Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+			if rec.Code != http.StatusOK {
+				t.Fatal("expected 200, got", rec.Code)
+			}
+			body := rec.Body.String()
+			for _, want := range tt.want {
+				if !strings.Contains(body, want) {
+					t.Errorf("expected the page to contain %q", want)
+				}
+			}
+			if strings.Contains(body, "of a repo no longer cached") {
+				t.Error("expected the commit of an uncached repo left out")
+			}
+		})
 	}
 }

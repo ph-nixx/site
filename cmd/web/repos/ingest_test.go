@@ -361,3 +361,12 @@ func Test_prune_repo_lists_the_paths_no_longer_referenced(t *testing.T) {
 		})
 	}
 }
+
+func Test_into_html_wraps_tables_for_scrolling(t *testing.T) {
+	got := intoHTML([]byte("| id | result |\n|---|---|\n| 1 | B+ |\n\nafter\n"))
+	want := "<div class=\"table-scroll\">\n<table>\n<thead>\n<tr>\n<th>id</th>\n<th>result</th>\n</tr>\n</thead>\n" +
+		"<tbody>\n<tr>\n<td>1</td>\n<td>B+</td>\n</tr>\n</tbody>\n</table>\n</div>\n<p>after</p>\n"
+	if got != want {
+		t.Errorf("intoHTML() = %q, want %q", got, want)
+	}
+}

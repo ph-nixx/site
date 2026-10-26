@@ -13,56 +13,29 @@
 			</svg>
 		</a>
 	</div>
-	<ol class="bl-skel">
-		<li>
-			<div>
-				<span></span>
-				<span><span></span><span></span><span></span><span></span><span></span></span>
-				<span></span>
-			</div>
+	{{if .}}
+	<ol class="list-none border-t border-border">
+		{{range .}}
+		<li class="border-b border-border last:border-b-0 transition-colors duration-[var(--dur)] ease-[var(--ease-out)] hover:bg-surface-1">
+			<a href="{{.Href}}" target="_blank" rel="noreferrer noopener"
+				class="group flex items-center gap-s3 w-full px-s3 py-s4 text-md leading-[1.4] text-fg-muted no-underline transition-colors duration-[var(--dur)] ease-[var(--ease-out)] hover:text-fg focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-bg),0_0_0_4px_var(--color-focus)]">
+				<span class="w-[54px] shrink-0 font-mono text-xs text-fg-subtle">{{.Date}}</span>
+				<!-- a fixed width column, so every message starts at the same x whatever the pill's length -->
+				<span class="w-[96px] shrink-0">
+					<span
+						class="inline-block max-w-full truncate align-middle rounded-pill border border-border bg-surface-2 px-s2 py-[2px] font-mono text-xs leading-[1.4] text-fg-muted">{{.Project}}</span>
+				</span>
+				<span class="min-w-0 truncate">{{.Message}}</span>
+				<svg aria-hidden="true"
+					class="ml-auto w-[14px] h-[14px] shrink-0 stroke-2 text-fg-subtle opacity-0 transition-[opacity,color] duration-[var(--dur)] ease-[var(--ease-out)] group-hover:opacity-100 group-hover:text-fg">
+					<use href="#LuChevron"></use>
+				</svg>
+			</a>
 		</li>
-		<li>
-			<div>
-				<span></span>
-				<span><span></span><span></span><span></span><span></span><span></span></span>
-				<span></span>
-			</div>
-		</li>
-		<li>
-			<div>
-				<span></span>
-				<span><span></span><span></span><span></span><span></span><span></span></span>
-				<span></span>
-			</div>
-		</li>
-		<li>
-			<div>
-				<span></span>
-				<span><span></span><span></span><span></span><span></span><span></span></span>
-				<span></span>
-			</div>
-		</li>
-		<li>
-			<div>
-				<span></span>
-				<span><span></span><span></span><span></span><span></span><span></span></span>
-				<span></span>
-			</div>
-		</li>
-		<li>
-			<div>
-				<span></span>
-				<span><span></span><span></span><span></span><span></span><span></span></span>
-				<span></span>
-			</div>
-		</li>
-		<li>
-			<div>
-				<span></span>
-				<span><span></span><span></span><span></span><span></span><span></span></span>
-				<span></span>
-			</div>
-		</li>
+		{{end}}
 	</ol>
+	{{else}}
+	<p class="self-start pt-s4 text-md text-fg-subtle">No commits in the last 90 days.</p>
+	{{end}}
 </div>
 {{end}}
