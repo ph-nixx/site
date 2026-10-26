@@ -73,6 +73,7 @@
   --spacing-s7: 48px;
   --spacing-s8: 64px;
   --spacing-section-pad: 50px;
+  --spacing-gutter: 40px; /* the nav's and the docs' page gutter from 860px; below it both use --spacing-s4 */
 
   /* sizing — border radius */
   --radius-sm: 4px;
@@ -94,6 +95,9 @@
   --nav-h: 50px;
   --z-sticky: 100;
   --container-width: 1240px;
+  --doc-measure: 90ch; /* prose line length of a docs page */
+  --doc-size: 15px;
+  --doc-in: 0.5s; /* how long a docs page takes to fade in */
 }
 
 /* Shared page gutter — floors at --spacing-s4 on narrow viewports, otherwise
@@ -354,7 +358,195 @@ body {
   .pcatalog-skel span,
   .pcatalog-skel span::before,
   .bl-skel span,
-  .bl-skel span::before {
+  .bl-skel span::before,
+  .doc {
     animation: none;
   }
 }
+
+/* ============================================================================
+   Docs: the HTML goldmark renders from a repo's Markdown, ported from the legacy
+   .doc block (commit 7020ef6). Scoped to .doc, the article htmx swaps each page
+   into, so it styles exactly the rendered Markdown and nothing around it.
+   ============================================================================ */
+
+.doc {
+  min-width: 0; /* lets pre and table scroll inside the column instead of widening it */
+  max-width: var(--doc-measure);
+  color: var(--color-doc-body);
+  font-size: var(--doc-size);
+  line-height: 1.7;
+  /* a bare URL or a long path has no break opportunity and would push the width */
+  overflow-wrap: break-word;
+  animation: doc-in var(--doc-in) var(--ease-out) both;
+}
+
+/* flow rhythm: the spacing between top level blocks */
+.doc > * + * { margin-top: var(--spacing-s4); }
+
+.doc p { text-wrap: pretty; }
+.doc :is(h1, h2, h3, h4) {
+  color: var(--color-fg);
+  font-weight: 600;
+  text-wrap: balance;
+  scroll-margin-top: calc(var(--nav-h) + var(--spacing-s5));
+}
+.doc h1 { font-size: 27px; line-height: 1.2; letter-spacing: -0.02em; margin-bottom: var(--spacing-s2); }
+.doc h2 { font-size: 20px; line-height: 1.3; letter-spacing: -0.01em; margin-top: var(--spacing-s7); }
+.doc h3 { font-size: 17px; line-height: 1.35; margin-top: var(--spacing-s6); }
+.doc h4 { font-size: 14px; line-height: 1.4; margin-top: var(--spacing-s5); }
+
+/* links: the text stays bright, the underline carries the softer token */
+.doc a {
+  color: var(--color-fg);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--color-fg-muted);
+  transition: text-decoration-color var(--dur) var(--ease-out);
+}
+.doc a:hover { text-decoration-color: var(--color-fg); }
+.doc a:focus-visible {
+  outline: none;
+  border-radius: 2px;
+  box-shadow: 0 0 0 2px var(--color-bg), 0 0 0 4px var(--color-focus);
+}
+
+.doc strong { color: var(--color-fg); font-weight: 650; }
+.doc em { font-style: italic; }
+
+/* lists: rows sit a small step apart, and so does a list nested in a row; markers sit a step behind their row,
+   dimmer than its text */
+.doc li { margin-top: var(--spacing-s2); }
+.doc li > :is(ul, ol) { margin-top: var(--spacing-s2); }
+
+/* unordered lists: a drawn dash rather than a ::marker, so it starts flush with the paragraph edge instead of
+   inside the list's indent; each item carries the indent, so a nested list's dashes line up with its parent's text */
+.doc ul > li { position: relative; padding-left: 1.5em; }
+.doc ul > li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: calc(0.85em - 0.75px); /* the middle of the first line, at line-height 1.7 */
+  width: 0.55em;
+  height: 1.5px;
+  border-radius: 1px;
+  background: var(--color-fg-disabled);
+}
+
+/* ordered lists: preflight removes list markers, so the type is restored before the numbers are styled */
+.doc ol { list-style-type: decimal; padding-left: 1.5em; }
+.doc ol > li::marker { color: var(--color-fg-disabled); font-weight: 600; font-family: var(--font-mono); font-size: 0.85em; }
+
+/* inline code */
+.doc :not(pre) > code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 0.12em 0.4em;
+  color: var(--color-fg);
+  overflow-wrap: anywhere;
+}
+
+/* fenced code: a well surface with its own sideways scroll. pre keeps the
+   radius and hides overflow while code does the scrolling inside it, since an
+   element cannot clip its own scrollbar to a border radius */
+.doc pre {
+  background-color: var(--color-well);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  font-size: var(--text-md);
+  line-height: 1.65;
+}
+.doc pre code {
+  display: block;
+  font-family: var(--font-mono);
+  color: var(--color-code-fg);
+  padding: var(--spacing-s4);
+  overflow-x: auto;
+  white-space: pre;
+  /* the bar rests invisible and fades in on hover or focus; thin reserves its
+     gutter either way, so revealing it costs no reflow */
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color var(--dur) var(--ease-out);
+}
+.doc pre code::-webkit-scrollbar { height: 10px; }
+.doc pre code::-webkit-scrollbar-track { background: transparent; }
+.doc pre code::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: var(--radius-pill);
+  border: 3px solid var(--color-well);
+  transition: background var(--dur) var(--ease-out);
+}
+/* focus as well as hover: a bar driven with the arrow keys has to be visible */
+.doc pre:is(:hover, :focus-within) code { scrollbar-color: var(--color-fg-subtle) transparent; }
+.doc pre:is(:hover, :focus-within) code::-webkit-scrollbar-thumb { background: var(--color-fg-subtle); }
+
+/* blockquote: a tinted block with a full border, never a side stripe */
+.doc blockquote {
+  background: var(--color-well);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-s4) var(--spacing-s5);
+  color: var(--color-fg-muted);
+}
+.doc blockquote > * + * { margin-top: var(--spacing-s3); }
+.doc blockquote strong { color: var(--color-fg); }
+
+.doc hr { border: 0; border-top: 1px solid var(--color-border); margin-block: var(--spacing-s6); }
+
+/* tables: a hairline grid with the header on a raised surface. goldmark emits a
+   bare table with no scrolling wrapper, so the table scrolls itself: as a block
+   it grows with its content up to the column, then scrolls sideways */
+.doc table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: var(--text-md);
+}
+.doc :is(th, td) {
+  text-align: left;
+  padding: var(--spacing-s3) var(--spacing-s4);
+  border-bottom: 1px solid var(--color-border);
+}
+.doc th { color: var(--color-fg); font-weight: 600; background: var(--color-surface-1); white-space: nowrap; }
+.doc td { color: var(--color-doc-body); vertical-align: top; }
+.doc tr:last-child td { border-bottom: 0; }
+.doc tbody tr:hover td { background: rgba(237, 237, 237, 0.02); }
+
+.doc img { max-width: 100%; height: auto; border-radius: var(--radius-md); border: 1px solid var(--color-border); }
+
+/* GFM task lists */
+.doc ul:has(> li > input[type="checkbox"]) { padding-left: 0.2em; }
+.doc li:has(> input[type="checkbox"]) { display: flex; align-items: baseline; gap: var(--spacing-s2); padding-left: 0; }
+.doc li:has(> input[type="checkbox"])::before { content: none; } /* the checkbox is the marker */
+.doc li > input[type="checkbox"] {
+  appearance: none;
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  translate: 0 2px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  display: grid;
+  place-content: center;
+}
+.doc li > input[type="checkbox"]:checked { background: var(--color-success); border-color: var(--color-success); }
+.doc li > input[type="checkbox"]:checked::after {
+  content: "";
+  width: 4px;
+  height: 8px;
+  margin-top: -2px;
+  border: solid var(--color-well);
+  border-width: 0 2px 2px 0;
+  rotate: 45deg;
+}
+
+@keyframes doc-in { from { opacity: 0; transform: translateY(6px); } }

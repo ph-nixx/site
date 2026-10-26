@@ -14,16 +14,49 @@
 </head>
 
 <body>
-	<main>
-		<nav aria-label="Docs">
-			<ul>
-				<li><a href="/{{.Repo.Name}}" hx-get="/{{.Repo.Name}}" hx-target="#doc" hx-push-url="true"
-						data-route="">{{.Repo.Title}}</a></li>
-				{{template "doc_sidebar" .Sidebar}}
-			</ul>
-		</nav>
-		<article id="doc">{{.HTML}}</article>
-	</main>
+	{{template "nav" .Repos}}
+	<!-- the sidebar, then the reading column; below 860px one column, with the sidebar as a disclosure above the page.
+	     From 860px the docs run full width with the nav's gutter (px-gutter); the sidebar reaches 16px into it so each
+	     row keeps room for its focus ring inside the sidebar's scroll clip, and its text still lines up under the
+	     breadcrumb -->
+	<div class="grid grid-cols-1 items-start min-[860px]:px-gutter min-[860px]:grid-cols-[300px_minmax(0,1fr)]">
+		<aside class="border-b border-border min-[860px]:-ml-s4 min-[860px]:sticky min-[860px]:top-[var(--nav-h)] min-[860px]:z-10 min-[860px]:h-[calc(100dvh-var(--nav-h))] min-[860px]:overflow-y-auto min-[860px]:overscroll-contain min-[860px]:border-b-0 min-[860px]:[mask-image:linear-gradient(to_bottom,transparent_0,#000_var(--spacing-s4),#000_calc(100%-var(--spacing-s6)),transparent_100%)] [&::-webkit-scrollbar]:w-[10px] [&::-webkit-scrollbar-thumb]:rounded-pill [&::-webkit-scrollbar-thumb]:border-3 [&::-webkit-scrollbar-thumb]:border-solid [&::-webkit-scrollbar-thumb]:border-bg [&::-webkit-scrollbar-thumb]:bg-border hover:[&::-webkit-scrollbar-thumb]:bg-border-strong">
+			<details open class="group">
+				<summary class="flex items-center justify-between gap-s3 px-s4 py-s3 cursor-pointer list-none font-mono text-sm font-medium tracking-[0.02em] text-fg [&::-webkit-details-marker]:hidden min-[860px]:hidden">
+					{{.Repo.Title}}
+					<svg aria-hidden="true" class="w-4 h-4 text-fg-subtle transition-transform duration-[var(--dur)] ease-[var(--ease-out)] group-open:rotate-90">
+						<use href="#LuChevron"></use>
+					</svg>
+				</summary>
+				<nav aria-label="Docs" class="max-h-[60vh] overflow-y-auto px-1 pt-s4 pb-s5 min-[860px]:pl-1 min-[860px]:pr-s5 min-[860px]:max-h-none min-[860px]:overflow-visible min-[860px]:pt-s5 min-[860px]:pb-s7">
+					<a href="/{{.Repo.Name}}" hx-get="/{{.Repo.Name}}" hx-target="#doc" hx-push-url="true" data-route=""
+						class="flex items-center gap-s3 px-s3 pt-[2px] pb-s4 rounded-sm text-lg font-medium text-fg no-underline transition-colors duration-[var(--dur)] ease-[var(--ease-out)] hover:text-link focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-bg),0_0_0_4px_var(--color-focus)]">
+						{{if .Repo.SVG}}<img src="/static/icons/{{.Repo.ID}}" alt="" width="18" height="18"
+							class="w-[18px] h-[18px] shrink-0">{{else}}<svg aria-hidden="true" class="w-[18px] h-[18px] shrink-0">
+							<use href="#LuPackage"></use>
+						</svg>{{end}}
+						{{.Repo.Title}}
+					</a>
+					{{range .Sidebar}}
+					{{if .Children}}
+					<div class="mt-s4 flex flex-col gap-s2 before:content-[''] before:h-px before:mx-s3 before:mb-s2 before:bg-border">
+						<p class="px-s3 font-mono text-xs font-medium uppercase tracking-[0.08em] text-fg">{{if .Href}}<a href="{{.Href}}" hx-get="{{.Href}}" hx-target="#doc"
+								hx-push-url="true" data-route="{{.Route}}" class="text-inherit no-underline rounded-sm transition-colors duration-[var(--dur)] ease-[var(--ease-out)] hover:text-link focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-bg),0_0_0_4px_var(--color-focus)] aria-[current=page]:cursor-default">{{.Title}}</a>{{else}}{{.Title}}{{end}}</p>
+						<ul class="flex flex-col gap-[2px] list-none">{{template "doc_sidebar" .Children}}</ul>
+					</div>
+					{{else if .Href}}
+					<a href="{{.Href}}" hx-get="{{.Href}}" hx-target="#doc" hx-push-url="true" data-route="{{.Route}}"
+						class="block px-s3 py-[3px] rounded-sm text-sm leading-[1.45] text-fg-subtle no-underline transition-colors duration-[var(--dur)] ease-[var(--ease-out)] hover:text-fg focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-bg),0_0_0_4px_var(--color-focus)] aria-[current=page]:text-fg aria-[current=page]:font-medium aria-[current=page]:cursor-default">{{.Title}}</a>
+					{{end}}
+					{{end}}
+				</nav>
+			</details>
+		</aside>
+		<main class="min-w-0 min-h-[calc(100dvh-var(--nav-h))] px-s4 pt-s6 pb-s7 min-[860px]:border-l min-[860px]:border-border min-[860px]:px-s6 min-[860px]:pt-s7 min-[860px]:pb-s8">
+			<article id="doc" class="doc">{{.HTML}}</article>
+		</main>
+	</div>
+	{{template "icons" .}}
 	<script>
 		// marks the sidebar entry of the page in the URL, on load and after every swap or history restore
 		function markCurrent() {
@@ -33,8 +66,14 @@
 				else link.removeAttribute("aria-current");
 			}
 		}
+		// below 860px the sidebar is a disclosure above the page, so it starts folded and folds away again once a page
+		// is picked
+		function closeSidebar() {
+			if (!matchMedia("(min-width: 860px)").matches) document.querySelector("aside details").open = false;
+		}
 		markCurrent();
-		document.body.addEventListener("htmx:afterSwap", markCurrent);
+		closeSidebar();
+		document.body.addEventListener("htmx:afterSwap", () => { markCurrent(); closeSidebar(); });
 		document.body.addEventListener("htmx:historyRestore", markCurrent);
 	</script>
 </body>
@@ -45,9 +84,9 @@
 {{define "doc_sidebar"}}
 {{range .}}
 <li>
-	{{if .Href}}<a href="{{.Href}}" hx-get="{{.Href}}" hx-target="#doc" hx-push-url="true"
-		data-route="{{.Route}}">{{.Title}}</a>{{else}}<span>{{.Title}}</span>{{end}}
-	{{if .Children}}<ul>{{template "doc_sidebar" .Children}}</ul>{{end}}
+	{{if .Href}}<a href="{{.Href}}" hx-get="{{.Href}}" hx-target="#doc" hx-push-url="true" data-route="{{.Route}}"
+		class="block px-s3 py-[3px] rounded-sm text-sm leading-[1.45] text-fg-subtle no-underline transition-colors duration-[var(--dur)] ease-[var(--ease-out)] hover:text-fg focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-bg),0_0_0_4px_var(--color-focus)] aria-[current=page]:text-fg aria-[current=page]:font-medium aria-[current=page]:cursor-default">{{.Title}}</a>{{else}}<span class="block px-s3 py-[3px] rounded-sm text-sm leading-[1.45] text-fg-subtle no-underline">{{.Title}}</span>{{end}}
+	{{if .Children}}<ul class="mt-[2px] pl-s3 flex flex-col gap-[2px] list-none">{{template "doc_sidebar" .Children}}</ul>{{end}}
 </li>
 {{end}}
 {{end}}
