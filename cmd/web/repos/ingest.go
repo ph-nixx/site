@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/google/go-github/v91/github"
 	"github.com/redis/go-redis/v9"
@@ -20,6 +21,7 @@ import (
 // restarting from the new LastIngestedSHA when another push commits first.
 func (r *Repos) Set(ctx context.Context, event *github.PushEvent) error {
 	owner, name, after := event.GetRepo().GetOwner().GetLogin(), event.GetRepo().GetName(), event.GetAfter()
+	log := r.logger.With("repo", event.GetRepo().GetFullName(), "after", after)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var files map[string]File // fetched once: a restart reuses them, since After has not changed
@@ -66,17 +68,19 @@ func (r *Repos) Set(ctx context.Context, event *github.PushEvent) error {
 		docsToml, readMe := files[DOCS_CONFIG_PATH], files[README_PATH]
 		switch {
 		case docsToml.Status == FileUnreadable:
-			return nil // TODO: log warning
+			log.Warn("docs.toml is binary or too large to read; the repo stays frozen until a push fixes it")
+			return nil
 		case docsToml.Status == FileMissing && s == "":
 			return nil // not eligible
 		case readMe.Status != FileFound && cached == nil:
-			return nil // TODO: log warning, README.md is required on the first ingest
+			log.Warn("README.md is missing or unreadable on the first ingest, where it is required; nothing is ingested")
+			return nil
 		}
 		wg.Wait()
 		var ghErr *github.ErrorResponse
 		if compErr != nil && !(errors.As(compErr, &ghErr) &&
 			(ghErr.Response.StatusCode == http.StatusNotFound || ghErr.Response.StatusCode >= http.StatusInternalServerError)) {
-			return compErr // TODO: log
+			return fmt.Errorf("compare %s...%s: %w", s, after, compErr) // logged by the caller
 		}
 
 		cfg, err := reconcileDocsConfig(docsToml, readMe, event, cached, comp, compErr)
@@ -84,48 +88,52 @@ func (r *Repos) Set(ctx context.Context, event *github.PushEvent) error {
 		case errors.Is(err, ErrStale):
 			return nil
 		case errors.Is(err, ErrDocsRemoved):
-			_, err = r.dropFromCache(ctx, cached.ID, s) // TODO: handle ok false, another push committed first
-			return err
+			ok, err := r.dropFromCache(ctx, cached.ID, s)
+			if err != nil || ok {
+				return err
+			}
+			// another push committed first: restart from its SHA, whose comparison either stops this push as stale
+			// or still finds docs.toml gone and deep cleans again
+			if restarts == MAX_RESTARTS {
+				return fmt.Errorf("overtaken after %d restarts", MAX_RESTARTS)
+			}
+			continue
 		case errors.Is(err, ErrDocsSyntax):
-			return nil // TODO: log warning
+			log.Warn("docs.toml does not parse; the repo stays frozen until a push fixes it", "err", err)
+			return nil
 		case err != nil:
 			return err
 		}
 
-		var (
-			result              CommitResult
-			docsErr, commitsErr error
-			processes           sync.WaitGroup
-		)
-		processes.Go(func() {
-			html, err := r.fetchDocs(ctx, cfg)
-			if err != nil {
-				docsErr = err
-				return
-			}
-
-			result, docsErr = r.commitDocs(ctx, buildRepo(event, cfg), s, html)
-		})
-		processes.Go(func() {
-			var commits []ConventionalCommit
-			if cfg.PushCommits {
-				for _, c := range event.Commits {
-					if cc, ok := fromPushCommit(event.GetRepo(), c); ok {
-						commits = append(commits, cc)
-					}
-				}
-			} else {
-				for _, c := range comp.Commits {
-					if cc, ok := fromComparisonCommit(event.GetRepo(), c); ok {
-						commits = append(commits, cc)
-					}
+		// process two: the push's commits, which process one's commit writes with the docs so neither is logged alone
+		var commits []ConventionalCommit
+		if cfg.PushCommits {
+			for _, c := range event.Commits {
+				if cc, ok := fromPushCommit(event.GetRepo(), c); ok {
+					commits = append(commits, cc)
 				}
 			}
+		} else {
+			for _, c := range comp.Commits {
+				if cc, ok := fromComparisonCommit(event.GetRepo(), c); ok {
+					commits = append(commits, cc)
+				}
+			}
+		}
 
-			commitsErr = r.setCommits(ctx, commits)
-		})
-		processes.Wait()
-		if err := errors.Join(docsErr, commitsErr); err != nil {
+		// process one
+		html, err := r.fetchDocs(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		if readMe.Status != FileFound {
+			log.Warn("README.md is missing or unreadable; the project page keeps its cached HTML")
+		}
+		for _, w := range cfg.Warnings {
+			log.Warn("docs.toml node is invalid", "key", w.Key, "reason", w.Reason)
+		}
+		result, err := r.commitDocs(ctx, buildRepo(event, cfg), s, html, commits)
+		if err != nil {
 			return err
 		}
 
@@ -166,6 +174,7 @@ func (r *Repos) fetchDocs(ctx context.Context, cfg *DocsConfig) (map[string]stri
 		for i := range nodes {
 			if f, ok := files[nodes[i].Path]; ok && f.Status != FileFound {
 				nodes[i].Missing = true
+				cfg.warn(&nodes[i], "its file is missing or unreadable at the pushed commit")
 			}
 			stack = append(stack, nodes[i].Children)
 		}
@@ -263,10 +272,11 @@ const (
 	Overtaken                      // a push GitHub received no later committed first: restart from its SHA
 )
 
-// Runs the commit transaction; when Repo.LastIngestedSHA no longer equals expected, writes nothing and orders the two
-// pushes by LastPushedAt. The old paths are pruned from the stored repo read under WATCH, and only the html of paths
-// repo references, plus README.md, is written, so HTML fetched inside a skipped subtree is discarded.
-func (r *Repos) commitDocs(ctx context.Context, repo Repo, expected string, html map[string]string) (CommitResult, error) {
+// Runs the commit transaction, writing the docs and the push's commits together; when Repo.LastIngestedSHA no longer
+// equals expected, writes nothing and orders the two pushes by LastPushedAt. The old paths are pruned from the stored
+// repo read under WATCH, and only the html of paths repo references, plus README.md, is written, so HTML fetched inside
+// a skipped subtree is discarded.
+func (r *Repos) commitDocs(ctx context.Context, repo Repo, expected string, html map[string]string, commits []ConventionalCommit) (CommitResult, error) {
 	id := strconv.FormatInt(repo.ID, 10)
 	data, err := json.Marshal(repo)
 	if err != nil {
@@ -289,6 +299,19 @@ func (r *Repos) commitDocs(ctx context.Context, repo Repo, expected string, html
 			pairs = append(pairs, path, h)
 		}
 	}
+
+	members := make([]redis.Z, 0, len(commits))
+	for _, c := range commits {
+		// a commit logged once from the push event and once from a comparison must serialize to the same member,
+		// so the timestamp is normalized to UTC whatever offset the source reported
+		c.Timestamp = c.Timestamp.UTC()
+		data, err := json.Marshal(c)
+		if err != nil {
+			return 0, err
+		}
+		members = append(members, redis.Z{Score: float64(c.Timestamp.Unix()), Member: data})
+	}
+	cutoff := strconv.FormatInt(time.Now().Add(-COMMIT_RETENTION).Unix(), 10)
 
 	var result CommitResult
 	commit := func(tx *redis.Tx) error {
@@ -320,6 +343,7 @@ func (r *Repos) commitDocs(ctx context.Context, repo Repo, expected string, html
 
 		docs := id + DOCS_KEY_SUFFIX
 		old := pruneRepo(stored, &repo)
+		var added, pruned *redis.IntCmd
 		if _, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 			if len(old) > 0 {
 				pipe.HDel(ctx, docs, old...)
@@ -328,13 +352,27 @@ func (r *Repos) commitDocs(ctx context.Context, repo Repo, expected string, html
 				pipe.HSet(ctx, docs, pairs...)
 			}
 			pipe.HSet(ctx, REPOS_KEY, id, data)
+			if len(members) > 0 {
+				added = pipe.ZAdd(ctx, COMMITS_UPDATE_PREFIX, members...)
+			}
+			pruned = pipe.ZRemRangeByScore(ctx, COMMITS_UPDATE_PREFIX, "-inf", cutoff)
 			pipe.Publish(ctx, REPOS_UPDATES_CHANNEL, REPOS_UPDATE_PREFIX+":"+id)
 			return nil
 		}); err != nil {
 			return err
 		}
 		result = Committed
-		return nil
+
+		// re-adding commits already logged is common and changes nothing, so instances reload the log only on a real
+		// change; published after repos:{ID}, so an instance caches a newly ingested repo before loading its commits
+		changed := pruned.Val()
+		if added != nil {
+			changed += added.Val()
+		}
+		if changed == 0 {
+			return nil
+		}
+		return tx.Publish(ctx, REPOS_UPDATES_CHANNEL, COMMITS_UPDATE_PREFIX).Err()
 	}
 
 	// WATCH covers the whole repos hash, so a write to any repo aborts EXEC without this repo having changed

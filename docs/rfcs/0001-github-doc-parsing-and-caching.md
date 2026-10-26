@@ -12,8 +12,8 @@ with the repo's documentation at the pushed commit (the event's `after` SHA) and
 Every file read for a push uses that same `after` SHA.
 File contents are read through GitHub's GraphQL API, which returns any set of paths in one request; the comparison
 uses the REST API, the only one that lists the files a comparison changed.
-The work is split into an initial sequential step that validates the push, followed by two processes that run concurrently
-and write independently once validation passes.
+The work is split into an initial sequential step that validates the push, followed by two processes whose results are
+written together, by one Redis transaction, once validation passes.
 
 Pushes to other branches, and pushes to repos whose name is on the server's hard coded blacklist of names reserved for
 site routes, are dropped by the webhook handler before any of this starts.
@@ -95,14 +95,16 @@ until it commits or the new comparison shows it is stale.
 Any other failure writes nothing and leaves `Repo.LastIngestedSHA` unchanged, so the next push retries the work.
 
 **Process two: commits.** Parse the comparison's commits into `ConventionalCommit` values, dropping any commit whose
-message does not strictly follow the Conventional Commits specification, add them to `commits`,
-then prune every member whose score is older than the current UTC time minus 90 days.
+message does not strictly follow the Conventional Commits specification, and hand them to process one's commit
+transaction, which adds them to `commits` and prunes every member whose score is older than the current UTC time minus
+90 days, in the same transaction that writes the repo.
 When there is no usable comparison (first ingest, `diverged`, or a 5xx or 404 from the comparison), the push event's
 own commits are used instead.
+Commits are data about a repo, so they are logged only when the repo is: a push whose docs are not committed (a
+failure in process one, a lost SHA check, or a deep clean that committed first) logs no commits either, and every
+member of `commits` belongs to a repo in `repos`.
 Using the comparison means commits from pushes that were frozen or failed are logged once a later push succeeds;
 commits that were already logged are added again harmlessly, since identical members are not duplicated.
-Process two does not wait for process one's write: once validation passes, a failure in process one (a rate limit, a timeout,
-or a lost SHA check) delays only the docs, which the next push catches up.
 
 ## Guide-level explanation
 [guide-level-explanation]: #guide-level-explanation
@@ -308,7 +310,8 @@ the `Repo` JSON is rewritten.
 `Repo` gains the fields that describe the docs, plus `DocRoutes`, derived from them when a repo is loaded into the
 local cache and never stored, and `Repos` gains a name to ID map; `ConventionalCommit` gains `RepoID` and drops
 `RepoName`, so a deep clean can find a repo's commits and the commit log can show its current name even after the
-repo is renamed.
+repo is renamed. It also gains `Breaking` and `Footers`, the parts of a Conventional Commit beyond its header (see
+[[0001-github-doc-parsing-and-caching#Parsing commit messages|Parsing commit messages]]).
 ```go
 // The local cache of every repo and the commit log, synced with Redis by syncLocalCache.
 type Repos struct {
@@ -353,10 +356,18 @@ type ConventionalCommit struct {
 	RepoID    int64     `json:"repo_id"` // new: matches Repo.ID, used by the deep clean and to look up the repo's current name
 	Timestamp time.Time `json:"timestamp"`
 
-	Type        string `json:"type"`
-	Scope       string `json:"scope"`
-	Description string `json:"description"`
-	Body        string `json:"body"`
+	Type        string   `json:"type"`              // lowercased, e.g. "feat"
+	Scope       string   `json:"scope"`             // as written, empty when the header has none
+	Breaking    bool     `json:"breaking"`          // new: a ! before the header's colon, or a BREAKING CHANGE footer
+	Description string   `json:"description"`
+	Body        string   `json:"body"`              // the paragraphs between the header and the footers
+	Footers     []Footer `json:"footers,omitempty"` // new: in message order
+}
+
+// A footer of a Conventional Commit, e.g. "Refs: #123" or "Closes #42".
+type Footer struct {
+	Token string `json:"token"` // as written, e.g. "Co-Authored-By" or "BREAKING CHANGE"
+	Value string `json:"value"` // everything after the separator, which may span lines
 }
 ```
 
@@ -474,17 +485,19 @@ type DocNode struct {
 | `repos` | hash | `Repo.ID` to `Repo` JSON string |
 | `{Repo.ID}:docs` | hash | repo root relative file path to rendered HTML string |
 | `commits` | sorted set | `ConventionalCommit` JSON strings scored by `Timestamp` as Unix seconds |
-| `repos:updates` | pub/sub channel | `repos:{Repo.ID}` after a docs write or deep clean, `commits` after a commit log write that added or pruned a member |
+| `repos:updates` | pub/sub channel | `repos:{Repo.ID}` after a commit or deep clean, then `commits` when that commit added or pruned a member, or after a deep clean |
 
 A commit is logged at most once because the same commit always serializes to the same JSON string:
 every `ConventionalCommit` field is derived from the commit itself or from the immutable `Repo.ID`, and `Timestamp` is
 always the committer date, whether it comes from the comparison or from the push event. `Timestamp` is stored in UTC,
 since `time.Time` JSON includes the zone offset and the two sources may report the same instant with different offsets.
 No field may ever be derived from the push (such as the time it was received), or the same commit would become two members.
+For the same reason, changing the fields of `ConventionalCommit` changes the JSON of every commit: a commit logged
+before such a change would be logged again as a second member, until the 90 day prune removes the old one.
 The repo name is not stored for the same reason, since a rename would change it; the commit log resolves it from
-`RepoID` through the local cache when it renders. A commit whose `RepoID` is not in the local cache is skipped rather
-than rendered without a name: it belongs to a repo that a deep clean removed, and was added after the deep clean read
-`commits` (see [[0001-github-doc-parsing-and-caching#Deep clean|Deep clean]]).
+`RepoID` through the local cache when it renders. Every commit in the log belongs to a cached repo, since commits are
+written by their repo's own commit transaction and removed by its deep clean (see
+[[0001-github-doc-parsing-and-caching#Transactions|Transactions]]).
 
 ### Webhook
 
@@ -493,13 +506,24 @@ than rendered without a name: it belongs to a repo that a deep clean removed, an
 func (a *App) githubPushEvent(w http.ResponseWriter, r *http.Request)
 ```
 
-1. Decode the body into a `github.PushEvent`; respond 400 if it does not decode.
-2. Respond 202 immediately.
-3. If `Ref` is not `refs/heads/{event.Repo.DefaultBranch}`, stop.
-4. If `event.Repo.Name` is on the hard coded blacklist, log and stop.
-5. Run `Repos.Set` in a goroutine with its own context and a 60 second timeout, independent of the request.
+1. Verify the `X-Hub-Signature-256` header with `github.ValidatePayload` and the webhook secret; respond 401 if the
+   signature is missing or wrong, without decoding the body or doing any other work.
+2. If `X-GitHub-Event` is not `push` (e.g. the `ping` GitHub sends when the webhook is created), respond 204 and stop.
+3. Decode the body into a `github.PushEvent`; respond 400 if it does not decode.
+4. Respond 202 immediately.
+5. If `Ref` is not `refs/heads/{event.Repo.DefaultBranch}`, stop.
+6. If `event.Repo.Name` is on the hard coded blacklist, log and stop.
+7. Run `Repos.Set` in a goroutine with its own context and a 60 second timeout, independent of the request.
 
 Filtering here means `Set` can assume every event it receives is a default branch push to a repo that may be ingested.
+
+The signature check is required, not optional. The endpoint is public, and every field ingestion trusts comes from
+the payload: an unsigned event could name any public repo to publish on the site, burn the server's GitHub rate
+limit, or pair an old `after` with a late `pushed_at` so that a `diverged` comparison passes the stale check and a
+missing `docs.toml` deep cleans a real repo. GitHub signs each delivery with HMAC SHA256 of the raw body, keyed by
+the webhook's secret, which the server reads once at startup from `GITHUB_WEBHOOK_SECRET` into `App.webhookSecret`.
+Startup fails when it is unset or empty, since `ValidatePayload` skips the check for an empty secret.
+`ValidatePayload` compares signatures in constant time and caps the body at GitHub's 25 MB payload limit.
 
 If an instance shuts down mid ingestion the work is lost, but `Repo.LastIngestedSHA` has not moved, so the next push
 redoes it.
@@ -588,6 +612,10 @@ normally, and the invalid node is [[0001-github-doc-parsing-and-caching#Node ide
 1. If `docs.toml` returned 404:
 	- If `S` is not empty and the comparison reported `ahead` or `diverged`, or returned 404, the file existed at the
 	  last ingest, so run the [[0001-github-doc-parsing-and-caching#Deep clean|deep clean]] and stop.
+	  If the deep clean finds that another push committed first, restart at Process zero step 1 with the new `S`, as
+	  for an `Overtaken` commit, counting against the same cap of 3 restarts. The new comparison stops the push when
+	  the push that committed first is at or past `after`, and otherwise still finds `docs.toml` gone and deep cleans
+	  from the new `S`; a deep clean that committed first leaves the repo missing, which stops the restart.
 	  A 404 means `S` no longer exists, so no later comparison could ever confirm the deletion; a stale push wiping a
 	  newer ingest would need both a lost `S` and an out of order delivery, which is accepted over keeping the repo cached forever.
 	- If `S` is not empty and the comparison failed with any other error (a 5xx, a timeout, a rate limit), the order of
@@ -607,7 +635,8 @@ normally, and the invalid node is [[0001-github-doc-parsing-and-caching#Node ide
 
 Stopping at any point in this step writes nothing and leaves `Repo.LastIngestedSHA` unchanged, which freezes the repo's
 cached docs and commits until a later push passes validation and catches up from `S`.
-Once validation passes, process one and process two start concurrently.
+Once validation passes, process two collects the push's commits and process one ingests its docs; process one's commit
+transaction writes both, so neither is written without the other.
 
 ```go
 var (
@@ -648,7 +677,8 @@ func reconcileDocsConfig(docsToml, readMe File, event *github.PushEvent, cached 
 7. Build the new `Repo`: GitHub metadata from the event, settings from `DocsConfig`, the effective `DocSections`,
    `LastCommit` from `HeadCommit`, `LastIngestedSHA` set to `event.After`, and `LastPushedAt` set to
    `event.Repo.PushedAt`.
-8. Run the [[0001-github-doc-parsing-and-caching#Commit|commit]] with expected SHA `S`.
+8. Run the [[0001-github-doc-parsing-and-caching#Commit|commit]] with expected SHA `S`, passing the commits from
+   process two.
 	* `Committed`: done.
 	* `Superseded`: a push GitHub received after this one committed first, so this push is stale. Stop without writing.
 	* `Overtaken`: a push GitHub received no later than this one committed first. This push is still the newer one, but
@@ -660,8 +690,8 @@ func reconcileDocsConfig(docsToml, readMe File, event *github.PushEvent, cached 
 	Only a push received no later than this one can cause a restart, and once this push commits, every such push still
 	running stops, so the loop ends on its own. The cap of 3 restarts is a safety net; exhausting it is a failure.
 
-9. Any error (a non 404 fetch failure, a Redis error, a timeout) is a failure: nothing is written and
-   the next push retries the work from `S`. Rendering cannot fail (see [[0001-github-doc-parsing-and-caching#Rendering|Rendering]]).
+9. Any error (a non 404 fetch failure, a Redis error, a timeout) is a failure: nothing is written, commits included,
+   and the next push retries the work from `S`. Rendering cannot fail (see [[0001-github-doc-parsing-and-caching#Rendering|Rendering]]).
 
 ```mermaid
 flowchart LR
@@ -682,7 +712,7 @@ flowchart LR
 
 	keep & freeze & skip --> effective["effective tree<br/>in docs.toml order"]
 	effective --> build["build Repo<br/>LastIngestedSHA = After"]
-	build --> commit{"commit with expected S<br/>old: paths in stored tree<br/>not in effective tree,<br/>except README.md"}
+	build --> commit{"commit with expected S,<br/>docs and commits together<br/>old: paths in stored tree<br/>not in effective tree,<br/>except README.md"}
 
 	commit -->|Committed| done([done])
 	commit -->|Superseded| stopSuperseded([stop: a later push already committed])
@@ -691,8 +721,9 @@ flowchart LR
 ```
 
 ```go
-// Decodes, filters, and hands off; it knows nothing about eligibility or ingestion.
-// Inline: decode the body into a github.PushEvent (400 if it does not decode), respond 202, stop unless Ref is
+// Verifies, decodes, filters, and hands off; it knows nothing about eligibility or ingestion.
+// Inline: verify the signature with github.ValidatePayload (401 if it fails), respond 204 to an event other than push,
+// decode the body into a github.PushEvent (400 if it does not decode), respond 202, stop unless Ref is
 // refs/heads/{Repo.DefaultBranch}, log and stop if Repo.Name is blacklisted, then run Repos.Set in a goroutine with
 // context.WithoutCancel and a 60 second timeout, logging its error.
 func (a *App) githubPushEvent(w http.ResponseWriter, r *http.Request)
@@ -706,15 +737,16 @@ func (a *App) githubPushEvent(w http.ResponseWriter, r *http.Request)
 //   3. stop if the comparison is behind or identical, or if it is diverged or failed with a 5xx or 404 and
 //      cached.LastPushedAt is not before event.Repo.PushedAt, before anything can act on a stale After
 //   4. docs.toml 404: when S is not empty, dropFromCache if the comparison is ahead or diverged or returned 404,
-//      otherwise fail (a failed comparison cannot rule out a stale After); when S is empty, stop
+//      restarting at 1 when another push committed first, otherwise fail (a failed comparison cannot rule out a
+//      stale After); when S is empty, stop
 //   5. docs.toml unreadable: log a warning and stop; otherwise reconcileDocsConfig, where ErrDocsSyntax logs a
 //      warning and stops and ErrCompare fails
 //   6. README.md missing or unreadable: stop when cached is nil; reconcileDocsConfig stores its bytes in cfg.ReadMe
 //      only when it is found and new or outdated, otherwise leaving it nil
-//   7. run process one and process two concurrently, waiting for both even when one fails and returning their errors joined
-//      process one: fetchDocs, buildRepo, commitDocs; Superseded stops, Overtaken restarts at 1, up to 3 times
-//      process two: pick comp.Commits, or event.Commits when S is empty, the comparison diverged, or it failed with a 5xx
-//      or 404, convert with fromComparisonCommit or fromPushCommit, then setCommits
+//   7. process two: pick comp.Commits, or event.Commits when S is empty, the comparison diverged, or it failed with a
+//      5xx or 404, and convert them with fromComparisonCommit or fromPushCommit
+//   8. process one: fetchDocs, buildRepo, then commitDocs with the commits from process two; Superseded stops,
+//      Overtaken restarts at 1, up to 3 times
 func (r *Repos) Set(ctx context.Context, event *github.PushEvent) error
 
 // Fetches every path in cfg.UpdatePaths at cfg.SHA through one FetchFiles call and renders them, using cfg.ReadMe
@@ -756,24 +788,62 @@ func intoHTML(md []byte) string
 1. Take commits from the source in the comparison's **Commits** result: the comparison's `commits`, or the push
    event's `Commits` when there is no usable comparison (an empty `S`, `diverged`, or a 5xx or 404).
    A truncated file list does not affect this, so a 300 file comparison still supplies the commits.
-2. Parse each into a `ConventionalCommit`; drop any commit whose message does not strictly follow the Conventional
-   Commits specification. `distinct` is ignored: every commit in range is considered.
-3. `ZADD commits` every parsed commit with its `Timestamp` in UTC, then `ZREMRANGEBYSCORE commits -inf {now - 90 days}`,
-   then `PUBLISH repos:updates commits` only if the `ZADD` added a member or the prune removed one. Re-adding commits
-   that are already logged, which most pushes do, changes nothing, so no instance is told to reload the commit log.
+2. Parse each into a `ConventionalCommit` by the rules in
+   [[0001-github-doc-parsing-and-caching#Parsing commit messages|Parsing commit messages]], and drop any commit whose
+   message breaks one of them. `distinct` is ignored: every commit in range is considered.
+3. Hand the parsed commits to process one, whose [[0001-github-doc-parsing-and-caching#Commit|commit]] writes them.
+   Process two itself makes no request and writes nothing.
 
-Process two does not wait for process one. If process one later fails, `S` has not moved, so the next push compares from `S`
-again and re-adds the same commits, which leaves the sorted set unchanged.
-A restart reruns both processes. Process two re-adds commits it may already have logged, which leaves the sorted set
-unchanged, and picks up any commits the first run missed because it read them from the push event rather than a
-comparison.
+If the commit does not happen, the commits are not logged, but nothing is lost: `S` has not moved, so the next push
+compares from `S` again and collects the same commits.
+A restart collects commits again from the new comparison, which covers only the gap after the push that committed
+first; that push already logged the commits before it.
+
+#### Parsing commit messages
+
+The parser follows [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/), with the choices
+below where the specification leaves room, and one relaxation made on purpose. A message that breaks any rule is
+dropped from the log whole; a commit is never logged from part of its message.
+
+* **Line endings**: `\r\n` is normalized to `\n` before parsing, so the blank line rules mean the same for every client.
+* **Header**, the first line: a type, an optional scope, an optional `!`, then `: ` and the description, matching
+  `^([A-Za-z]+)(\(([^()\n]+)\))?(!)?: (\S.*)$`.
+	* The type is one or more letters, matched case insensitively and stored lowercased, since the specification forbids
+	  treating it as case sensitive (rule 15). Any type is accepted, not only `feat` and `fix` (rule 14).
+	* The scope, when present, is non empty text in parentheses with no parenthesis inside, stored as written. `()` is
+	  dropped.
+	* A `!` immediately before the colon marks the commit `Breaking` (rule 13).
+	* The separator is exactly a colon and one space, and the description must start right after it (rule 5): `feat :`,
+	  `feat:x`, and `feat:  x` are dropped, as is an empty description.
+* **Body**: when the message has more lines, the second one must be blank (rule 6); a message whose second line holds
+  text is dropped. The body is everything after that blank line up to the footers, with leading and trailing blank lines
+  removed, and may hold any number of paragraphs (rule 7).
+* **Footers**: the last paragraph of the message is the footer block when its first line is a footer line (rule 8);
+  otherwise the message has no footers and that paragraph belongs to the body.
+	* A footer line is a token followed by `: ` or ` #` (rule 9). A token is letters, digits, and `-`, since `-` stands
+	  in for whitespace, with `BREAKING CHANGE` as the only token allowed to contain a space. For ` #` the `#` stays at the
+	  start of the value, so `Closes #42` has the value `#42`.
+	* A line inside the block that is not a footer line continues the previous footer's value (rule 10).
+	* A `BREAKING CHANGE` or `BREAKING-CHANGE` footer marks the commit `Breaking` (rules 12 and 16). The token is matched
+	  case insensitively, a deliberate relaxation of rule 12, which requires it in uppercase: a lowercase
+	  `breaking change:` still marks the commit instead of being kept as an ordinary footer.
+* **Breaking**: set by either marker; a commit with both is simply breaking.
+* **No length limits**: the 72 character header is a convention, not part of the specification, so nothing is
+  dropped or truncated for length. Shortening long headers is a display concern.
+
+Merge commits GitHub writes (`Merge pull request #12 from ...`) and the reverts git writes by default
+(`Revert "feat: ..."`) do not match the header, so they are not logged. A squash merge such as `feat: add search (#12)`
+is. A last paragraph that only happens to look like a footer, such as `Note: see the wiki`, is parsed as one.
 
 ```go
 // Parses a comparison commit, timestamped by its committer date.
 func fromComparisonCommit(repo *github.PushEventRepository, c *github.RepositoryCommit) (ConventionalCommit, bool)
 
-// Adds commits to the commit log and prunes entries older than 90 days.
-func (r *Repos) setCommits(ctx context.Context, commits []ConventionalCommit) error
+// Parses a push event commit, timestamped by its timestamp, which must equal the comparison's committer date.
+func fromPushCommit(repo *github.PushEventRepository, c *github.HeadCommit) (ConventionalCommit, bool)
+
+// Builds a ConventionalCommit from a message by the rules in Parsing commit messages; ok is false when it breaks one.
+func parseConventionalCommit(id string, repoID int64, timestamp time.Time, message string) (ConventionalCommit, bool)
 ```
 
 ### Transactions
@@ -797,7 +867,12 @@ its own key to watch instead.
   comparison, which orders commits exactly, decides instead of the one second clock.
 * Otherwise compute the **old** paths with `pruneRepo` from the stored `Repo` (nil when missing) to the new one, then
   queue `HDEL {Repo.ID}:docs` the **old** paths, `HSET {Repo.ID}:docs` the path and HTML pairs for **new**
-  and **outdated**, `HSET repos {Repo.ID}` the new JSON, and `PUBLISH repos:updates repos:{Repo.ID}`, then `EXEC`.
+  and **outdated**, `HSET repos {Repo.ID}` the new JSON, `ZADD commits` the push's commits with each `Timestamp` in
+  UTC, `ZREMRANGEBYSCORE commits -inf {now - 90 days}`, and `PUBLISH repos:updates repos:{Repo.ID}`, then `EXEC`.
+* After `EXEC`, `PUBLISH repos:updates commits` only if the `ZADD` added a member or the prune removed one. Re-adding
+  commits that are already logged, which most pushes do, changes nothing, so no instance is told to reload the commit
+  log. Publishing it after `repos:{Repo.ID}` means every instance caches a newly ingested repo before it loads the
+  repo's commits.
 
 #### Deep clean
 
@@ -809,12 +884,9 @@ its own key to watch instead.
 
 Scanning `commits` is linear in its size, which the 90 day prune keeps small.
 
-The deep clean cannot guarantee that no commit of the repo outlives it. Another push to the same repo can still be in
-process two, which does not check the SHA, so its `ZADD commits` can land after the `ZRANGE` or after the `EXEC`.
-Watching `commits` as well would not close the gap, since the `ZADD` can still follow the `EXEC`. Those members are left
-in `commits` with a `RepoID` no repo has, so the commit log skips them when it renders, and the 90 day prune removes
-them eventually. If the repo is later ingested again it keeps the same `Repo.ID`, so the commits reappear in the log,
-which is correct since they are real commits of that repo.
+No commit of the repo can outlive the deep clean. Commits are only written by a commit transaction, under the same
+`WATCH repos` and SHA check: a push to the same repo still in flight finds the repo's field gone, so its commit returns
+`Overtaken` without writing, and its restart reads the missing repo and stops.
 
 ```go
 // How a commit transaction ended.
@@ -826,9 +898,10 @@ const (
 	Overtaken                      // a push GitHub received no later committed first: restart from its SHA
 )
 
-// Runs the commit transaction; when Repo.LastIngestedSHA no longer equals expected, writes nothing and orders the two
-// pushes by LastPushedAt. The old paths are pruned from the stored repo read under WATCH.
-func (r *Repos) commitDocs(ctx context.Context, repo Repo, expected string, html map[string]string) (CommitResult, error)
+// Runs the commit transaction, writing the docs and the push's commits together; when Repo.LastIngestedSHA no longer
+// equals expected, writes nothing and orders the two pushes by LastPushedAt. The old paths are pruned from the stored
+// repo read under WATCH.
+func (r *Repos) commitDocs(ctx context.Context, repo Repo, expected string, html map[string]string, commits []ConventionalCommit) (CommitResult, error)
 
 // Runs the deep clean transaction; ok is false when Repo.LastIngestedSHA no longer equals expectedSHA.
 func (r *Repos) dropFromCache(ctx context.Context, repoID int64, expectedSHA string) (bool, error)
@@ -843,8 +916,9 @@ The local cache keeps two maps, updated together under the same lock: `map[int64
 matching how Redis keys, pub/sub messages, and commits identify a repo, and `map[string]int64` from `Repo.Name` to
 `Repo.ID`, used only to resolve the first URL segment. `syncLocalCache` changes in three ways:
 
-* When `HGET repos {Repo.ID}` finds nothing (a deep clean), the repo and its name are removed from the cache instead of
-  logging a warning.
+* When `HGET repos {Repo.ID}` finds nothing (a deep clean), the repo, its name, and its commits are removed from the
+  cache instead of logging a warning, all under the same lock, so the cached commit log never holds a commit whose
+  repo is gone, even before the deep clean's `commits` message arrives.
 * Every reloaded repo gets its `DocRoutes` derived before it is stored, under the same lock, so a request never sees a
   tree and doc routes from different pushes.
 * A reloaded repo replaces the entry with the same `Repo.ID`;  if its name changed, the old name is read from the
@@ -951,7 +1025,8 @@ It solved the same problem with a different set of trade offs, and most of this 
 
 ### What carries over
 
-* The default branch filter, background processing, and reading every file at a single commit.
+* The webhook signature check, the default branch filter, background processing, and reading every file at a single
+  commit.
 * Rendered HTML cached in Redis keyed by repo ID, with pub/sub to keep every instance's in memory cache fresh.
   The legacy design doc's sizing still holds: a 250 line Markdown file renders to roughly 30KB of HTML, so even
   5 projects with 100 pages each is about 15MB.
@@ -985,9 +1060,6 @@ It solved the same problem with a different set of trade offs, and most of this 
 
 To resolve before implementation:
 
-* **Webhook signature verification**: the legacy system verified `X-Hub-Signature-256` with HMAC SHA256 and a
-  `WEBHOOK_SECRET`; go-github's `github.ValidatePayload(r, secret)` performs the same check and returns the body,
-  so what remains is deciding whether to require it and confirming it runs before the 202.
 * **GitHub API authentication and rate limits**: which token the server uses (a personal access token or a GitHub App),
   how it is configured, and what happens when a limit is reached. REST (the comparison) allows 5,000 requests an hour,
   and GraphQL (file fetches) has its own budget of 5,000 points an hour, where a file query costs about 1 point.
@@ -995,8 +1067,8 @@ To resolve before implementation:
   Today a rate limit is an ordinary failure that the next push retries; go-github reports a REST one as
   `*github.RateLimitError`, so it can be told apart if needed.
 * **Commit timestamp source**: confirm that the push payload's `commits[].timestamp` equals the comparison's
-  `commit.committer.date` for the same commit as an instant; a different zone offset is harmless, since `setCommits`
-  stores every `Timestamp` in UTC. If the instants differ, the fallback path must use the same source as the
+  `commit.committer.date` for the same commit as an instant; a different zone offset is harmless, since the commit
+  transaction stores every `Timestamp` in UTC. If the instants differ, the fallback path must use the same source as the
   comparison or a commit can be logged twice.
 * **Repo rename**: if a Github repo is renamed how will the project URL and cached values be adjusted.
 * **`pushed_at` semantics**: confirm that `repository.pushed_at` in a push payload is the time of that push, not the

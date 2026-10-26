@@ -1,0 +1,53 @@
+{{define "doc"}}
+<!doctype html>
+<html lang='en'>
+
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>{{.Repo.Title}}</title>
+	<link rel="icon" href="/static/favicon.ico" sizes="any">
+	<link rel="icon" href="/static/light-favicon.svg" type="image/svg+xml" media="(prefers-color-scheme: light)">
+	<link rel="icon" href="/static/dark-favicon.svg" type="image/svg+xml" media="(prefers-color-scheme: dark)">
+	<link href="/static/output.css" rel="stylesheet">
+	<script src="/static/js/htmx-2.0.4.min.js" defer></script>
+</head>
+
+<body>
+	<main>
+		<nav aria-label="Docs">
+			<ul>
+				<li><a href="/{{.Repo.Name}}" hx-get="/{{.Repo.Name}}" hx-target="#doc" hx-push-url="true"
+						data-route="">{{.Repo.Title}}</a></li>
+				{{template "doc_sidebar" .Sidebar}}
+			</ul>
+		</nav>
+		<article id="doc">{{.HTML}}</article>
+	</main>
+	<script>
+		// marks the sidebar entry of the page in the URL, on load and after every swap or history restore
+		function markCurrent() {
+			const route = location.pathname.split("/").slice(2).join("/").replace(/\/$/, "");
+			for (const link of document.querySelectorAll("[data-route]")) {
+				if (link.dataset.route === route) link.setAttribute("aria-current", "page");
+				else link.removeAttribute("aria-current");
+			}
+		}
+		markCurrent();
+		document.body.addEventListener("htmx:afterSwap", markCurrent);
+		document.body.addEventListener("htmx:historyRestore", markCurrent);
+	</script>
+</body>
+
+</html>
+{{end}}
+
+{{define "doc_sidebar"}}
+{{range .}}
+<li>
+	{{if .Href}}<a href="{{.Href}}" hx-get="{{.Href}}" hx-target="#doc" hx-push-url="true"
+		data-route="{{.Route}}">{{.Title}}</a>{{else}}<span>{{.Title}}</span>{{end}}
+	{{if .Children}}<ul>{{template "doc_sidebar" .Children}}</ul>{{end}}
+</li>
+{{end}}
+{{end}}

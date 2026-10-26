@@ -19,9 +19,10 @@ import (
 )
 
 type App struct {
-	Logger *slog.Logger
-	tmpl   *template.Template
-	repos  *repos.Repos
+	Logger        *slog.Logger
+	tmpl          *template.Template
+	repos         *repos.Repos
+	webhookSecret []byte // GITHUB_WEBHOOK_SECRET, read once by New; signs every push delivery
 }
 
 // funcMap exposes helpers to the HTML templates.
@@ -38,6 +39,12 @@ func New(ctx context.Context, logger *slog.Logger) (*App, error) {
 		return nil, errors.New("unset env var REDIS_URL")
 	}
 
+	// go-github skips the signature check when the secret is empty, so an empty one is as unsafe as none
+	secret, ok := os.LookupEnv("GITHUB_WEBHOOK_SECRET")
+	if !ok || secret == "" {
+		return nil, errors.New("unset env var GITHUB_WEBHOOK_SECRET")
+	}
+
 	opts, err := redis.ParseURL(REDIS_URL)
 	if err != nil {
 		return nil, err
@@ -52,7 +59,7 @@ func New(ctx context.Context, logger *slog.Logger) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &App{logger, tmpl, r}, nil
+	return &App{Logger: logger, tmpl: tmpl, repos: r, webhookSecret: []byte(secret)}, nil
 }
 
 func (a *App) Routes() *http.ServeMux {
@@ -65,6 +72,9 @@ func (a *App) Routes() *http.ServeMux {
 	})
 
 	mux.HandleFunc("GET /{$}", a.home)
+	mux.HandleFunc("GET /{name}", a.doc)
+	mux.HandleFunc("GET /{name}/{route...}", a.doc)
+	mux.HandleFunc("POST /webhooks/github", a.githubPushEvent)
 
 	return mux
 }
@@ -103,14 +113,23 @@ func (a *App) renderErr(w http.ResponseWriter, r *http.Request, statusCode int, 
 		StatusCode: statusCode,
 		Message:    http.StatusText(statusCode),
 	}
-	if err := a.tmpl.ExecuteTemplate(w, "error", data); err != nil {
+	// rendered into a buffer first, so the status is written only once the page is known to render
+	var buf bytes.Buffer
+	if err := a.tmpl.ExecuteTemplate(&buf, "error", data); err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
 	}
+	w.WriteHeader(statusCode)
+	buf.WriteTo(w)
 }
 
 func (a *App) render(w http.ResponseWriter, r *http.Request, tmplName string, data any) {
-	w.WriteHeader(http.StatusOK)
-	if err := a.tmpl.ExecuteTemplate(w, tmplName, data); err != nil {
+	// rendered into a buffer first, so a template error can still be answered with a 500
+	var buf bytes.Buffer
+	if err := a.tmpl.ExecuteTemplate(&buf, tmplName, data); err != nil {
 		a.renderErr(w, r, http.StatusInternalServerError, err)
+		return
 	}
+	w.WriteHeader(http.StatusOK)
+	buf.WriteTo(w)
 }

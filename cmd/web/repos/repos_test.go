@@ -14,6 +14,9 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// A logger that drops everything, for a Repos built directly in a test.
+var discard = slog.New(slog.DiscardHandler)
+
 // mockClient is an in-memory Client with a controllable hash, commit set and subscription.
 type mockClient struct {
 	mu        sync.Mutex
@@ -266,5 +269,42 @@ func Test_new_repos_returns_error_when_commits_fetch_fails(t *testing.T) {
 
 	if _, err := New(context.Background(), client, nil, slog.New(slog.DiscardHandler)); err == nil {
 		t.Fatal("expected New to fail when the commits fetch fails")
+	}
+}
+
+// A deep clean's repos update drops the repo's commits from the local commit log together with the repo, before the
+// commits update that follows it arrives.
+func Test_deep_clean_drops_the_repos_commits_from_the_local_cache(t *testing.T) {
+	client := newMockClient(map[string]string{})
+	client.set(t, Repo{ID: 1, Name: "one"})
+	client.set(t, Repo{ID: 2, Name: "two"})
+	client.setCommits(
+		commitJSON(t, ConventionalCommit{ID: "b", RepoID: 2}),
+		commitJSON(t, ConventionalCommit{ID: "a", RepoID: 1}),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r, err := New(ctx, client, nil, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := r.Commits()
+
+	// the deep clean removed repo 2's field; only its repos update is published here, not the commits one
+	client.mu.Lock()
+	delete(client.hash, "2")
+	client.mu.Unlock()
+	client.sub.Publish("repos:2")
+
+	eventually(t, func() bool {
+		got := r.Commits()
+		return len(got) == 1 && got[0].ID == "a"
+	}, "repo 2's commits to leave the local commit log")
+	if _, ok := r.GetByName("two"); ok {
+		t.Error("expected repo 2 dropped from the local cache")
+	}
+	if len(before) != 2 {
+		t.Error("expected a slice handed out before the deep clean to keep both commits, got", before)
 	}
 }

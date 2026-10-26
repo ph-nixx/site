@@ -41,6 +41,25 @@ type DocsConfig struct {
 	// Process two reads event.Commits instead of the comparison's commits: S is empty, or the comparison diverged or
 	// failed with a 404 or 5xx; only an ahead comparison lists the commits since S.
 	PushCommits bool
+
+	// Node level problems found while reconciling docs.toml and fetching its files, in the order found; Set logs them.
+	Warnings []DocWarning
+}
+
+// A node level problem: the node is frozen, skipped, or ignored, and the rest of the docs are ingested normally.
+type DocWarning struct {
+	Key    string // the table key path, e.g. "install.macos"
+	Reason string // what is wrong with the node and what happens to it
+}
+
+// Records why n is invalid, and whether it is frozen at its cached version or skipped with its subtree, decided the
+// same way buildRepo decides it.
+func (cfg *DocsConfig) warn(n *DocNode, problem string) {
+	outcome := "skipped with its subtree, since it was never ingested"
+	if n.Cached != nil {
+		outcome = "frozen at its cached version"
+	}
+	cfg.Warnings = append(cfg.Warnings, DocWarning{Key: n.Key, Reason: problem + "; " + outcome})
 }
 
 // A node of the docs.toml tree as ingestion sees it; buildRepo turns the kept ones into DocSections.
@@ -132,8 +151,17 @@ func reconcileDocsConfig(docsToml, readMe File, event *github.PushEvent, cached 
 		Name:        repo.GetName(),
 		SHA:         event.GetAfter(),
 		Title:       capitalize(repo.GetName()),
-		Sections:    parseNodes(doc, tableKeys(md), nil, byKey),
 		PushCommits: !usable,
+	}
+	keys := tableKeys(md)
+	cfg.Sections = parseNodes(doc, keys, nil, byKey, cfg.warn)
+	for _, k := range keys {
+		if len(k) == MAX_DOC_DEPTH+1 {
+			cfg.Warnings = append(cfg.Warnings, DocWarning{
+				Key:    strings.Join(k, "."),
+				Reason: fmt.Sprintf("nested deeper than %d levels; ignored with its subtree", MAX_DOC_DEPTH),
+			})
+		}
 	}
 	if project, ok := doc["project"].(map[string]any); ok {
 		if title, ok := project["title"].(string); ok && title != "" {
@@ -169,6 +197,7 @@ func reconcileDocsConfig(docsToml, readMe File, event *github.PushEvent, cached 
 				}
 			case removed[n.Path]:
 				n.Missing = true
+				cfg.warn(n, "its file was removed in the comparison")
 			}
 		}
 	}
@@ -197,11 +226,12 @@ func tableKeys(md toml.MetaData) [][]string {
 
 // Parses the tables directly under prefix into nodes in docs.toml order, then resolves each against its cached
 // counterpart in cached: an invalid node is Frozen with its cached segment and title when it has one, and Skipped
-// when it does not.
-func parseNodes(doc map[string]any, keys [][]string, prefix []string, cached map[string]*DocSection) []DocNode {
+// when it does not, reported through warn either way.
+func parseNodes(doc map[string]any, keys [][]string, prefix []string, cached map[string]*DocSection,
+	warn func(n *DocNode, problem string)) []DocNode {
 	var (
-		nodes []DocNode
-		valid []bool
+		nodes    []DocNode
+		problems []string // why each node is invalid, empty for a valid one
 	)
 	for _, k := range keys {
 		if len(k) != len(prefix)+1 || !slices.Equal(k[:len(prefix)], prefix) || slices.Equal(k, []string{"project"}) {
@@ -211,11 +241,11 @@ func parseNodes(doc map[string]any, keys [][]string, prefix []string, cached map
 		if !ok {
 			continue // an array of tables, not a node
 		}
-		n, ok := parseNode(k, table)
+		n, problem := parseNode(k, table)
 		if len(k) < MAX_DOC_DEPTH {
-			n.Children = parseNodes(doc, keys, k, cached)
-		} // TODO: log warning for tables deeper than MAX_DOC_DEPTH, which are ignored
-		nodes, valid = append(nodes, n), append(valid, ok)
+			n.Children = parseNodes(doc, keys, k, cached, warn)
+		} // deeper tables are ignored, and reconcileDocsConfig warns about them
+		nodes, problems = append(nodes, n), append(problems, problem)
 	}
 
 	// siblings that resolve to the same segment are all invalid
@@ -226,30 +256,44 @@ func parseNodes(doc map[string]any, keys [][]string, prefix []string, cached map
 	for i := range nodes {
 		n := &nodes[i]
 		n.Cached = cached[n.Key]
+		if problems[i] == "" && segments[n.Segment] > 1 {
+			problems[i] = fmt.Sprintf("its segment %q is shared with a sibling", n.Segment)
+		}
 		switch {
-		case valid[i] && segments[n.Segment] == 1:
+		case problems[i] == "":
 		case n.Cached != nil:
-			n.Frozen, n.Segment, n.Title = true, n.Cached.Segment, n.Cached.Title // TODO: log warning
+			n.Frozen, n.Segment, n.Title = true, n.Cached.Segment, n.Cached.Title
+			warn(n, "invalid in docs.toml: "+problems[i])
 		default:
-			n.Skipped = true // TODO: log warning
+			n.Skipped = true
+			warn(n, "invalid in docs.toml: "+problems[i])
 		}
 	}
 	return nodes
 }
 
-// Reads one table's segment, title, and path, defaulting segment and title from its table name; ok is false on a
-// node level error: a name or segment that is not a slug, a value that is not a string, a section without a path, or
-// a path that does not end in .md.
-func parseNode(key []string, table map[string]any) (n DocNode, ok bool) {
+// Reads one table's segment, title, and path, defaulting segment and title from its table name; problem describes the
+// first node level error found, and is empty when there is none: a name or segment that is not a slug, a value that is
+// not a string, a section without a path, or a path that does not end in .md.
+func parseNode(key []string, table map[string]any) (n DocNode, problem string) {
+	fail := func(format string, args ...any) {
+		if problem == "" {
+			problem = fmt.Sprintf(format, args...)
+		}
+	}
 	name := key[len(key)-1]
-	ok = slugPattern.MatchString(name)
-	field := func(name, fallback string) string {
-		v, set := table[name]
+	if !slugPattern.MatchString(name) {
+		fail("its table name %q is not a slug", name)
+	}
+	field := func(field, fallback string) string {
+		v, set := table[field]
 		if !set {
 			return fallback
 		}
 		s, isString := v.(string)
-		ok = ok && isString
+		if !isString {
+			fail("its %s is not a string", field)
+		}
 		return s
 	}
 	n = DocNode{
@@ -258,9 +302,16 @@ func parseNode(key []string, table map[string]any) (n DocNode, ok bool) {
 		Title:   field("title", capitalize(strings.ReplaceAll(name, "-", " "))),
 		Path:    field("path", ""),
 	}
-	ok = ok && slugPattern.MatchString(n.Segment) &&
-		(n.Path != "" || len(key) == 1) && (n.Path == "" || strings.HasSuffix(n.Path, ".md"))
-	return n, ok
+
+	switch {
+	case !slugPattern.MatchString(n.Segment):
+		fail("its segment %q is not a slug", n.Segment)
+	case n.Path == "" && len(key) > 1:
+		fail("it is a section without a path")
+	case n.Path != "" && !strings.HasSuffix(n.Path, ".md"):
+		fail("its path %q does not end in .md", n.Path)
+	}
+	return n, problem
 }
 
 // Walks doc down key to the table it names; ok is false when any step is not a table.

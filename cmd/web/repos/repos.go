@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -56,6 +57,7 @@ type Repos struct {
 	names       map[string]int64     // Repo.Name -> Repo.ID, used only to resolve the first URL segment
 	commitCache []ConventionalCommit // newest to oldest
 	mu          sync.RWMutex         // guards repoCache, names, and commitCache, which are updated together
+	logger      *slog.Logger         // set by New; a Repos built directly, as in tests, must set it too
 }
 
 // A mapping from the numeric ID of a Repo to its fields synced with Redis by [Repos.sync_local_cache].
@@ -127,20 +129,30 @@ type DocSection struct {
 }
 
 // A representation of a Git commit that conforms to the
-// [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/O) standard.
+// [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) standard.
 type ConventionalCommit struct {
 	ID        string    `json:"id"`
 	RepoID    int64     `json:"repo_id"`   // matches Repo.ID, used by the deep clean and to look up the repo's current name
 	Timestamp time.Time `json:"timestamp"` // committer date, never a time derived from the push
 
-	// <[ConventionalCommit.Type]>(optional [ConventionalCommit.Scope]): <[ConventionalCommit.Description]>
+	// <[ConventionalCommit.Type]>(optional [ConventionalCommit.Scope])[optional !]: <[ConventionalCommit.Description]>
 	//
 	// [ConventionalCommit.Body]
+	//
+	// [ConventionalCommit.Footers]
 
-	Type        string `json:"type"`
-	Scope       string `json:"scope"`
-	Description string `json:"description"`
-	Body        string `json:"body"`
+	Type        string   `json:"type"`     // lowercased, e.g. "feat"
+	Scope       string   `json:"scope"`    // as written, empty when the header has none
+	Breaking    bool     `json:"breaking"` // a ! before the header's colon, or a BREAKING CHANGE footer
+	Description string   `json:"description"`
+	Body        string   `json:"body"`              // the paragraphs between the header and the footers
+	Footers     []Footer `json:"footers,omitempty"` // in message order
+}
+
+// A footer of a Conventional Commit, e.g. "Refs: #123" or "Closes #42".
+type Footer struct {
+	Token string `json:"token"` // as written, e.g. "Co-Authored-By" or "BREAKING CHANGE"
+	Value string `json:"value"` // everything after the separator, which may span lines
 }
 
 func New(ctx context.Context, client Client, gh Github, logger *slog.Logger) (*Repos, error) {
@@ -150,6 +162,7 @@ func New(ctx context.Context, client Client, gh Github, logger *slog.Logger) (*R
 		repoCache:   RepoCache{},
 		names:       map[string]int64{},
 		commitCache: []ConventionalCommit{},
+		logger:      logger,
 	}
 	reposHash, err := r.client.HGetAll(ctx, REPOS_KEY).Result()
 	if err != nil {
@@ -157,13 +170,13 @@ func New(ctx context.Context, client Client, gh Github, logger *slog.Logger) (*R
 	}
 
 	for _, v := range reposHash {
-		var repo Repo
-		if err := json.Unmarshal([]byte(v), &repo); err != nil {
+		repo, err := newRepo([]byte(v))
+		if err != nil {
 			return nil, err
 		}
-		r.repoCache[repo.ID] = &repo
+		r.replace(repo)
 	}
-	r.commitCache, err = r.fetchCommits(ctx, logger)
+	r.commitCache, err = r.fetchCommits(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -174,13 +187,13 @@ func New(ctx context.Context, client Client, gh Github, logger *slog.Logger) (*R
 		return nil, err
 	}
 
-	go r.syncLocalCache(ctx, sub, logger)
+	go r.syncLocalCache(ctx, sub)
 	return &r, nil
 }
 
 // fetchCommits loads the aggregated commit history from Redis in newest to oldest order,
 // skipping entries that fail to decode.
-func (r *Repos) fetchCommits(ctx context.Context, logger *slog.Logger) ([]ConventionalCommit, error) {
+func (r *Repos) fetchCommits(ctx context.Context) ([]ConventionalCommit, error) {
 	args := redis.ZRangeArgs{Key: COMMITS_UPDATE_PREFIX, Start: 0, Stop: -1, Rev: true}
 	jsonCommits, err := r.client.ZRangeArgs(ctx, args).Result()
 	if err != nil {
@@ -191,7 +204,7 @@ func (r *Repos) fetchCommits(ctx context.Context, logger *slog.Logger) ([]Conven
 	for _, val := range jsonCommits {
 		var c ConventionalCommit
 		if err := json.Unmarshal([]byte(val), &c); err != nil {
-			logger.Warn("failed to Unmarshal fetched commit JSON string", "content", val, "err", err)
+			r.logger.Warn("failed to Unmarshal fetched commit JSON string", "content", val, "err", err)
 			continue
 		}
 		commits = append(commits, c)
@@ -204,7 +217,7 @@ func (r *Repos) fetchCommits(ctx context.Context, logger *slog.Logger) ([]Conven
 // During local cache reconciliation [sync.RWMutex.Lock] is called and blocks all other goroutines from
 // reading or writing to [Repos.repoCache].
 // NOTE: [redis.Message.Payload] format is assumed to be UPDATE_TYPE | UPDATE_TYPE:[Repo.ID]
-func (r *Repos) syncLocalCache(ctx context.Context, sub Subscription, logger *slog.Logger) {
+func (r *Repos) syncLocalCache(ctx context.Context, sub Subscription) {
 	defer sub.Close()
 	for {
 		select {
@@ -218,35 +231,36 @@ func (r *Repos) syncLocalCache(ctx context.Context, sub Subscription, logger *sl
 			if strings.HasPrefix(msg.Payload, REPOS_UPDATE_PREFIX) {
 				_, repoID, ok := strings.Cut(msg.Payload, ":")
 				if !ok {
-					logger.Warn("malformed repo update message published to updates channel", "payload", msg.Payload)
+					r.logger.Warn("malformed repo update message published to updates channel", "payload", msg.Payload)
 					continue
 				}
 
-				_, err := strconv.ParseInt(repoID, 10, 64)
+				id, err := strconv.ParseInt(repoID, 10, 64)
 				if err != nil {
-					logger.Warn("malformed repo ID published to updates channel", "payload", msg.Payload, "err", err)
+					r.logger.Warn("malformed repo ID published to updates channel", "payload", msg.Payload, "err", err)
 					continue
 				}
 
 				repo_bytes, err := r.client.HGet(ctx, REPOS_KEY, repoID).Bytes()
+				if errors.Is(err, redis.Nil) {
+					r.dropFromLocal(id) // a deep clean removed the repo
+					continue
+				}
 				if err != nil {
-					logger.Warn("failed to fetch repo from Redis", "id", repoID, "err", err)
+					r.logger.Warn("failed to fetch repo from Redis", "id", repoID, "err", err)
 					continue
 				}
 
-				var repo Repo
-				if err := json.Unmarshal(repo_bytes, &repo); err != nil {
-					logger.Warn("invalid repo JSON in Redis", "id", repoID, "err", err)
+				repo, err := newRepo(repo_bytes)
+				if err != nil {
+					r.logger.Warn("invalid repo JSON in Redis", "id", repoID, "err", err)
 					continue
 				}
-
-				r.mu.Lock()
-				r.repoCache[repo.ID] = &repo
-				r.mu.Unlock()
+				r.replace(repo)
 			} else if msg.Payload == COMMITS_UPDATE_PREFIX {
-				commits, err := r.fetchCommits(ctx, logger)
+				commits, err := r.fetchCommits(ctx)
 				if err != nil {
-					logger.Warn("failed to fetch commits from Redis", "payload", msg.Payload, "err", err)
+					r.logger.Warn("failed to fetch commits from Redis", "payload", msg.Payload, "err", err)
 					continue
 				}
 
@@ -288,7 +302,9 @@ func (r *Repos) Get(IDs ...int64) ([]*Repo, bool) {
 
 // A [Repos.Get] wrapper that uses [Repos.names] to do the [Repo.Name] -> [Repo.ID] mapping.
 func (r *Repos) GetByName(name string) (*Repo, bool) {
+	r.mu.RLock()
 	ID, ok := r.names[name]
+	r.mu.RUnlock()
 	if !ok {
 		return nil, false
 	}
@@ -311,21 +327,72 @@ func (r *Repos) Commits() []ConventionalCommit {
 // Builds a cache ready repo from its stored JSON: decodes it and maps every node with a non empty Path (plus the project
 // page under "") to its file path keyed by stacked segments in DocRoutes.
 func newRepo(data []byte) (*Repo, error) {
-	panic("unimplemented")
+	var repo Repo
+	if err := json.Unmarshal(data, &repo); err != nil {
+		return nil, err
+	}
+
+	repo.DocRoutes = map[string]string{"": README_PATH}
+	var routes func(prefix string, sections []DocSection)
+	routes = func(prefix string, sections []DocSection) {
+		for _, s := range sections {
+			route := prefix + s.Segment
+			if s.Path != "" {
+				repo.DocRoutes[route] = s.Path
+			}
+			routes(route+"/", s.SubSections) // at most MAX_DOC_DEPTH levels deep: reconcileDocsConfig drops deeper tables
+		}
+	}
+	routes("", repo.DocSections)
+	return &repo, nil
 }
 
 // Stores a derived repo in the local cache by ID and maps its name to that ID, removing its old name if it was renamed.
 func (r *Repos) replace(repo *Repo) {
-	panic("unimplemented")
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if old, ok := r.repoCache[repo.ID]; ok && old.Name != repo.Name && r.names[old.Name] == repo.ID {
+		delete(r.names, old.Name)
+	}
+	r.repoCache[repo.ID] = repo
+	r.names[repo.Name] = repo.ID
 }
 
-// Removes the repo with the given ID, and its name, from the local cache.
+// Removes the repo with the given ID, its name, and its commits from the local cache, so the cached commit log never
+// holds a commit whose repo is gone, even before the deep clean's commits update arrives.
 func (r *Repos) dropFromLocal(repoID int64) {
-	panic("unimplemented")
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if old, ok := r.repoCache[repoID]; ok && r.names[old.Name] == repoID {
+		delete(r.names, old.Name)
+	}
+	delete(r.repoCache, repoID)
+	// a new slice, since Commits hands out the old one to callers
+	r.commitCache = slices.DeleteFunc(slices.Clone(r.commitCache), func(c ConventionalCommit) bool {
+		return c.RepoID == repoID
+	})
 }
 
 // Resolves a page URL to its repo and file path, then fetches the cached HTML for that file from {repoID}:docs;
 // ErrUnknownRepo for an unknown name, ErrUnknownPath for an unknown route.
 func (r *Repos) Doc(ctx context.Context, URL string) (string, error) {
-	panic("unimplemented")
+	name, route, _ := strings.Cut(strings.Trim(URL, "/"), "/")
+	r.mu.RLock()
+	repoID, ok := r.names[name]
+	repo := r.repoCache[repoID]
+	r.mu.RUnlock()
+	if !ok || repo == nil {
+		return "", ErrUnknownRepo
+	}
+
+	// replace swaps in a new *Repo rather than mutating one, so DocRoutes is safe to read without the lock
+	path, ok := repo.DocRoutes[route]
+	if !ok {
+		return "", ErrUnknownPath
+	}
+	html, err := r.client.HGet(ctx, strconv.FormatInt(repoID, 10)+DOCS_KEY_SUFFIX, path).Result()
+	if errors.Is(err, redis.Nil) {
+		return "", ErrUnknownPath // the route exists but its HTML was never cached
+	}
+	return html, err
 }

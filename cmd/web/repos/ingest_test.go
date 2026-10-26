@@ -1,12 +1,15 @@
 package repos
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"errors"
+	"log/slog"
 	"maps"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,7 +74,7 @@ func Test_set_stops_without_waiting_for_compare_when_the_files_alone_decide(t *t
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			gh := newMockGithub(map[string]File{"docs.toml": tt.docsToml, "README.md": tt.readMe}, tt.fetchErr, tt.stops)
-			r := Repos{client: newMockClient(map[string]string{}), github: gh, repoCache: RepoCache{}}
+			r := Repos{client: newMockClient(map[string]string{}), github: gh, repoCache: RepoCache{}, logger: discard}
 			if tt.cached {
 				r.repoCache[1] = &Repo{ID: 1, LastIngestedSHA: "a"}
 			}
@@ -132,7 +135,7 @@ func Test_set_does_not_fail_on_a_diverged_comparison(t *testing.T) {
 	found := File{Status: FileFound, Data: []byte("x")}
 	gh := newMockGithub(map[string]File{"docs.toml": found, "README.md": found}, nil, false)
 	gh.status = "diverged"
-	r := Repos{github: gh, repoCache: RepoCache{1: {ID: 1, LastIngestedSHA: "a"}}}
+	r := Repos{github: gh, repoCache: RepoCache{1: {ID: 1, LastIngestedSHA: "a"}}, logger: discard}
 	event := &github.PushEvent{
 		After: github.Ptr("b"),
 		Repo: &github.PushEventRepository{
@@ -156,7 +159,7 @@ func Test_fetch_docs_marks_missing_the_nodes_whose_files_were_not_found(t *testi
 		"docs/install/macos.md":           {Status: FileUnreadable},
 		"docs/guides/database-pooling.md": {Status: FileMissing},
 	}, nil, false)
-	r := Repos{github: gh}
+	r := Repos{github: gh, logger: discard}
 	cfg := &DocsConfig{
 		ReadMe: []byte("# One"),
 		Sections: []DocNode{
@@ -205,6 +208,57 @@ func Test_fetch_docs_marks_missing_the_nodes_whose_files_were_not_found(t *testi
 
 	if paths, want := slices.Sorted(maps.Keys(html)), []string{"README.md", "docs/getting-started.md"}; !slices.Equal(paths, want) {
 		t.Error("expected html for", want, "got", paths)
+	}
+
+	// every node fetchDocs marks Missing is warned about, frozen when cached and skipped when not
+	warned := map[string]string{}
+	for _, w := range cfg.Warnings {
+		warned[w.Key] = w.Reason
+	}
+	wantWarned := map[string]string{
+		"install.linux":           "its file is missing or unreadable at the pushed commit; skipped with its subtree, since it was never ingested",
+		"install.macos":           "its file is missing or unreadable at the pushed commit; frozen at its cached version",
+		"guides.database.pooling": "its file is missing or unreadable at the pushed commit; skipped with its subtree, since it was never ingested",
+	}
+	if !maps.Equal(warned, wantWarned) {
+		t.Error("expected warnings", wantWarned, "got", warned)
+	}
+}
+
+// [Repos.Set] logs a warning, tagged with the repo and the pushed SHA, for every stop that freezes the repo or leaves it
+// out, and for every invalid docs.toml node.
+func Test_set_logs_why_it_stops(t *testing.T) {
+	found := func(data string) File { return File{Status: FileFound, Data: []byte(data)} }
+	tests := []struct {
+		name     string
+		docsToml File
+		readMe   File
+		logged   string
+	}{
+		{"unreadable docs.toml", File{Status: FileUnreadable}, found("# x"), "docs.toml is binary or too large"},
+		{"README.md missing on the first ingest", found(""), File{Status: FileMissing}, "README.md is missing or unreadable on the first ingest"},
+		{"docs.toml syntax error", found("[guides"), found("# x"), "docs.toml does not parse"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			gh := newMockGithub(map[string]File{DOCS_CONFIG_PATH: tt.docsToml, README_PATH: tt.readMe}, nil, false)
+			r := Repos{github: gh, repoCache: RepoCache{}, logger: slog.New(slog.NewTextHandler(&buf, nil))}
+			event := &github.PushEvent{After: github.Ptr("b"), Repo: &github.PushEventRepository{
+				ID: github.Ptr(int64(1)), Name: github.Ptr("one"), FullName: github.Ptr("owner/one"),
+				Owner: &github.User{Login: github.Ptr("owner")},
+			}}
+
+			if err := r.Set(t.Context(), event); err != nil {
+				t.Fatal("expected no error, got", err)
+			}
+			out := buf.String()
+			for _, want := range []string{"level=WARN", tt.logged, "repo=owner/one", "after=b"} {
+				if !strings.Contains(out, want) {
+					t.Errorf("expected the log to contain %q, got %q", want, out)
+				}
+			}
+		})
 	}
 }
 
