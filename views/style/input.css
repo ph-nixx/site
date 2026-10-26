@@ -299,8 +299,7 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .pcatalog-skel span,
-  .pcatalog-skel span::before,
-  .doc {
+  .pcatalog-skel span::before {
     animation: none;
   }
 }
@@ -319,8 +318,11 @@ body {
   line-height: 1.75;
   /* a bare URL or a long path has no break opportunity and would push the width */
   overflow-wrap: break-word;
-  animation: doc-in var(--doc-in) var(--ease-out) both;
 }
+
+/* on the children rather than the article, so every htmx swap, which replaces only the article's contents, plays it */
+.doc > * { animation: doc-in var(--doc-in) var(--ease-out) both; }
+@media (prefers-reduced-motion: reduce) { .doc > * { animation: none; } }
 
 /* flow rhythm: the spacing between top level blocks */
 .doc > * + * { margin-top: var(--spacing-s4); }
