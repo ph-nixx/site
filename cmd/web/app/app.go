@@ -52,12 +52,17 @@ func New(ctx context.Context, logger *slog.Logger) (*App, error) {
 		return nil, errors.New("unset env var GITHUB_WEBHOOK_SECRET")
 	}
 
+	token, ok := os.LookupEnv("GITHUB_TOKEN")
+	if !ok || token == "" {
+		return nil, errors.New("unset env var GITHUB_TOKEN")
+	}
+
 	opts, err := redis.ParseURL(REDIS_URL)
 	if err != nil {
 		return nil, err
 	}
 
-	gh, err := github.NewClient()
+	gh, err := github.NewClient(github.WithAuthToken(token))
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +86,7 @@ func (a *App) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /{$}", a.home)
 	mux.HandleFunc("GET /{name}", a.doc)
 	mux.HandleFunc("GET /{name}/{route...}", a.doc)
-	mux.HandleFunc("POST /webhooks/github", a.githubPushEvent)
+	mux.HandleFunc("POST /hooks/github", a.githubPushEvent)
 
 	return mux
 }

@@ -40,12 +40,13 @@ func (a *App) githubPushEvent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		return
 	}
-	w.WriteHeader(http.StatusAccepted)
 
+	w.WriteHeader(http.StatusAccepted)
 	repo := event.GetRepo()
 	if event.GetRef() != "refs/heads/"+repo.GetDefaultBranch() {
 		return
 	}
+
 	if _, reserved := reservedRepoNames[repo.GetName()]; reserved {
 		a.Logger.Info("dropped push to a reserved repo name", "repo", repo.GetFullName())
 		return

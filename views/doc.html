@@ -73,6 +73,10 @@
 		}
 		markCurrent();
 		closeSidebar();
+		// the entry of the page already shown is inert, so clicking it again doesn't refetch the doc
+		document.body.addEventListener("htmx:confirm", (e) => {
+			if (e.detail.elt.getAttribute("aria-current") === "page") e.preventDefault();
+		});
 		document.body.addEventListener("htmx:afterSwap", () => { markCurrent(); closeSidebar(); });
 		document.body.addEventListener("htmx:historyRestore", markCurrent);
 	</script>

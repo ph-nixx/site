@@ -115,8 +115,8 @@ Once that file exists, every push to the default branch keeps the site's copy of
 ### Concepts
 
 * **Project page**: the repo's landing page in the docs, rendered from `README.md` at the repo root.
-  It is served at `/{repo name}`, where the repo name always matches the GitHub repo name and cannot be configured;
-  `[project].title` only changes the displayed name.
+  It is served at `/{repo name}`, where the repo name always matches the GitHub repo name and cannot be configured,
+  and its displayed name is always the repo name with the first character capitalized.
 * **Chapter**: a top level table in `docs.toml`, shown as a top level heading in the sidebar.
   A chapter may have its own page, without one it's a plain heading that only groups its sections.
 * **Section**: a table nested under a chapter (or under another section), always backed by a Markdown file.
@@ -149,9 +149,6 @@ my-lib/
 ```toml
 # docs.toml
 
-[project]
-title = "My Lib"
-
 [getting-started]
 path = "docs/getting-started.md"
 
@@ -176,7 +173,7 @@ path = "docs/guides/database-pooling.md"
 
 | Sidebar                         | URL                               | File                              |
 | ------------------------------- | --------------------------------- | --------------------------------- |
-| My Lib                          | `/my-lib`                         | `README.md`                       |
+| My-lib                          | `/my-lib`                         | `README.md`                       |
 | Getting started                 | `/my-lib/getting-started`         | `docs/getting-started.md`         |
 | Installation                    | (heading only)                    |                                   |
 | &nbsp;&nbsp;Linux               | `/my-lib/install/linux`           | `docs/install/linux.md`           |
@@ -252,7 +249,6 @@ and the repo gets a project page and no chapters.
 
 ```toml
 [project] # optional; reserved table name
-title = "Name" # optional, defaults to the repo name with the first character capitalized
 svg = '<svg></svg>' # optional
 
 [project-chapter-beta] # optional; table name must be a slug
@@ -328,7 +324,7 @@ type Repo struct {
 	ID              int64        `json:"id"`                // immutable GitHub repo ID
 	Name            string       `json:"name"`              // GitHub repo name, the first URL segment
 	FullName        string       `json:"full_name"`         // owner/name, as GitHub reports it
-	Title           string       `json:"title"`             // [project].title, or Name with the first character capitalized
+	Title           string       `json:"title"`             // Name with the first character capitalized
 	Description     string       `json:"description"`       // GitHub repo description
 	SVG             string       `json:"svg"`               // [project].svg
 	DocSections     []DocSection `json:"doc_sections"`      // chapters as served, in docs.toml order: invalid nodes frozen or skipped

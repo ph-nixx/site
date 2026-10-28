@@ -3,7 +3,6 @@ package app
 import (
 	"errors"
 	"html/template"
-	"io"
 	"net/http"
 
 	"github.com/ph-nixx/site/cmd/web/repos"
@@ -56,9 +55,10 @@ func (a *App) doc(w http.ResponseWriter, r *http.Request) {
 
 	if partial {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		io.WriteString(w, html)
+		w.Write([]byte(html))
 		return
 	}
+
 	repo, ok := a.repos.GetByName(name)
 	if !ok {
 		a.renderErr(w, r, http.StatusNotFound, nil) // removed by a deep clean between the two lookups
@@ -74,10 +74,22 @@ func (a *App) doc(w http.ResponseWriter, r *http.Request) {
 			if s.Path != "" {
 				e.Href = "/" + name + "/" + route
 			}
+
 			built = append(built, e)
 		}
 		return built
 	}
+
 	all, _ := a.repos.Get()
-	a.render(w, r, "doc", docPage{Repo: repo, HTML: template.HTML(html), Sidebar: entries("", repo.DocSections), Nav: navData{Repos: all, Current: name}})
+	a.render(
+		w,
+		r,
+		"doc",
+		docPage{
+			Repo:    repo,
+			HTML:    template.HTML(html),
+			Sidebar: entries("", repo.DocSections),
+			Nav:     navData{Repos: all, Current: name},
+		},
+	)
 }

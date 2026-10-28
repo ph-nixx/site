@@ -47,6 +47,7 @@ func (r *Repos) Set(ctx context.Context, event *github.PushEvent) error {
 				return err
 			}
 		}
+
 		var s string
 		if cached != nil {
 			s = cached.LastIngestedSHA
@@ -130,9 +131,11 @@ func (r *Repos) Set(ctx context.Context, event *github.PushEvent) error {
 		if err != nil {
 			return err
 		}
+
 		if readMe.Status != FileFound {
 			log.Warn("README.md is missing or unreadable; the project page keeps its cached HTML")
 		}
+
 		for _, w := range cfg.Warnings {
 			log.Warn("docs.toml node is invalid", "key", w.Key, "reason", w.Reason)
 		}

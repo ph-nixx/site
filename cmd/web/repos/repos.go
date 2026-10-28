@@ -106,7 +106,7 @@ type Repo struct {
 	ID              int64        `json:"id"`                // immutable GitHub repo ID
 	Name            string       `json:"name"`              // GitHub repo name, the first URL segment
 	FullName        string       `json:"full_name"`         // owner/name, as GitHub reports it
-	Title           string       `json:"title"`             // [project].title, or Name with the first character capitalized
+	Title           string       `json:"title"`             // Name with the first character capitalized
 	Description     string       `json:"description"`       // GitHub repo description
 	SVG             string       `json:"svg"`               // [project].svg
 	DocSections     []DocSection `json:"doc_sections"`      // chapters as served, in docs.toml order: invalid nodes frozen or skipped
@@ -377,11 +377,8 @@ func (r *Repos) dropFromLocal(repoID int64) {
 // ErrUnknownRepo for an unknown name, ErrUnknownPath for an unknown route.
 func (r *Repos) Doc(ctx context.Context, URL string) (string, error) {
 	name, route, _ := strings.Cut(strings.Trim(URL, "/"), "/")
-	r.mu.RLock()
-	repoID, ok := r.names[name]
-	repo := r.repoCache[repoID]
-	r.mu.RUnlock()
-	if !ok || repo == nil {
+	repo, ok := r.GetByName(name)
+	if !ok {
 		return "", ErrUnknownRepo
 	}
 
@@ -390,9 +387,11 @@ func (r *Repos) Doc(ctx context.Context, URL string) (string, error) {
 	if !ok {
 		return "", ErrUnknownPath
 	}
-	html, err := r.client.HGet(ctx, strconv.FormatInt(repoID, 10)+DOCS_KEY_SUFFIX, path).Result()
+
+	html, err := r.client.HGet(ctx, strconv.FormatInt(repo.ID, 10)+DOCS_KEY_SUFFIX, path).Result()
 	if errors.Is(err, redis.Nil) {
 		return "", ErrUnknownPath // the route exists but its HTML was never cached
 	}
+
 	return html, err
 }

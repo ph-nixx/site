@@ -19,6 +19,7 @@ var (
 	ErrCompare     = errors.New("compare failed")         // a failure: nothing is written
 	ErrStale       = errors.New("push already ingested")  // stop: a push at or past After was already ingested
 	ErrDocsRemoved = errors.New("docs.toml removed")      // deep clean: docs.toml is gone at a push that is not stale
+	ErrRetry       = errors.New("")
 )
 
 // A table name or segment in docs.toml.
@@ -29,7 +30,7 @@ type DocsConfig struct {
 	Owner    string    // the pushed repo's owner login, event.Repo.Owner.Login, used for GitHub API requests
 	Name     string    // the pushed repo's name, event.Repo.Name, used for GitHub API requests
 	SHA      string    // the commit docs.toml was read at, event.After
-	Title    string    // [project].title, or the repo name with the first character capitalized
+	Title    string    // the repo name with the first character capitalized
 	SVG      string    // [project].svg
 	ReadMe   []byte    // contents of README.md at SHA, fetched alongside docs.toml; nil when missing, unreadable, or unchanged
 	Sections []DocNode // every table up to depth 3, in docs.toml order
@@ -164,9 +165,6 @@ func reconcileDocsConfig(docsToml, readMe File, event *github.PushEvent, cached 
 		}
 	}
 	if project, ok := doc["project"].(map[string]any); ok {
-		if title, ok := project["title"].(string); ok && title != "" {
-			cfg.Title = title
-		}
 		if svg, ok := project["svg"].(string); ok {
 			cfg.SVG = svg
 		}
