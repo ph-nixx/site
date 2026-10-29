@@ -95,7 +95,7 @@ until it commits or the new comparison shows it is stale.
 Any other failure writes nothing and leaves `Repo.LastIngestedSHA` unchanged, so the next push retries the work.
 
 **Process two: commits.** Parse the comparison's commits into `ConventionalCommit` values, dropping any commit whose
-message does not strictly follow the Conventional Commits specification, and hand them to process one's commit
+message does not follow the Conventional Commits specification or has no body, and hand them to process one's commit
 transaction, which adds them to `commits` and prunes every member whose score is older than the current UTC time minus
 90 days, in the same transaction that writes the repo.
 When there is no usable comparison (first ingest, `diverged`, or a 5xx or 404 from the comparison), the push event's
@@ -306,7 +306,7 @@ the `Repo` JSON is rewritten.
 `Repo` gains the fields that describe the docs, plus `DocRoutes`, derived from them when a repo is loaded into the
 local cache and never stored, and `Repos` gains a name to ID map; `ConventionalCommit` gains `RepoID` and drops
 `RepoName`, so a deep clean can find a repo's commits and the commit log can show its current name even after the
-repo is renamed. It also gains `Breaking` and `Footers`, the parts of a Conventional Commit beyond its header (see
+repo is renamed. It also gains `Breaking`, set by a `!` in the header (see
 [[0001-github-doc-parsing-and-caching#Parsing commit messages|Parsing commit messages]]).
 ```go
 // The local cache of every repo and the commit log, synced with Redis by syncLocalCache.
@@ -352,18 +352,11 @@ type ConventionalCommit struct {
 	RepoID    int64     `json:"repo_id"` // new: matches Repo.ID, used by the deep clean and to look up the repo's current name
 	Timestamp time.Time `json:"timestamp"`
 
-	Type        string   `json:"type"`              // lowercased, e.g. "feat"
-	Scope       string   `json:"scope"`             // as written, empty when the header has none
-	Breaking    bool     `json:"breaking"`          // new: a ! before the header's colon, or a BREAKING CHANGE footer
-	Description string   `json:"description"`
-	Body        string   `json:"body"`              // the paragraphs between the header and the footers
-	Footers     []Footer `json:"footers,omitempty"` // new: in message order
-}
-
-// A footer of a Conventional Commit, e.g. "Refs: #123" or "Closes #42".
-type Footer struct {
-	Token string `json:"token"` // as written, e.g. "Co-Authored-By" or "BREAKING CHANGE"
-	Value string `json:"value"` // everything after the separator, which may span lines
+	Type        string `json:"type"`        // lowercased, e.g. "feat"
+	Scope       string `json:"scope"`       // as written, empty when the header has none
+	Breaking    bool   `json:"breaking"`    // new: a ! before the header's colon
+	Description string `json:"description"`
+	Body        string `json:"body"`        // every paragraph after the header, never empty
 }
 ```
 
@@ -799,8 +792,9 @@ first; that push already logged the commits before it.
 #### Parsing commit messages
 
 The parser follows [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/), with the choices
-below where the specification leaves room, and one relaxation made on purpose. A message that breaks any rule is
-dropped from the log whole; a commit is never logged from part of its message.
+below where the specification leaves room, and two departures made on purpose: a body is required, and footers are
+not parsed. A message that breaks any rule is dropped from the log whole; a commit is never logged from part of its
+message.
 
 * **Line endings**: `\r\n` is normalized to `\n` before parsing, so the blank line rules mean the same for every client.
 * **Header**, the first line: a type, an optional scope, an optional `!`, then `: ` and the description, matching
@@ -812,25 +806,20 @@ dropped from the log whole; a commit is never logged from part of its message.
 	* A `!` immediately before the colon marks the commit `Breaking` (rule 13).
 	* The separator is exactly a colon and one space, and the description must start right after it (rule 5): `feat :`,
 	  `feat:x`, and `feat:  x` are dropped, as is an empty description.
-* **Body**: when the message has more lines, the second one must be blank (rule 6); a message whose second line holds
-  text is dropped. The body is everything after that blank line up to the footers, with leading and trailing blank lines
-  removed, and may hold any number of paragraphs (rule 7).
-* **Footers**: the last paragraph of the message is the footer block when its first line is a footer line (rule 8);
-  otherwise the message has no footers and that paragraph belongs to the body.
-	* A footer line is a token followed by `: ` or ` #` (rule 9). A token is letters, digits, and `-`, since `-` stands
-	  in for whitespace, with `BREAKING CHANGE` as the only token allowed to contain a space. For ` #` the `#` stays at the
-	  start of the value, so `Closes #42` has the value `#42`.
-	* A line inside the block that is not a footer line continues the previous footer's value (rule 10).
-	* A `BREAKING CHANGE` or `BREAKING-CHANGE` footer marks the commit `Breaking` (rules 12 and 16). The token is matched
-	  case insensitively, a deliberate relaxation of rule 12, which requires it in uppercase: a lowercase
-	  `breaking change:` still marks the commit instead of being kept as an ordinary footer.
-* **Breaking**: set by either marker; a commit with both is simply breaking.
+* **Body**: required, a deliberate departure from rule 6, which makes it optional: a message with only a header is
+  dropped. The second line must be blank (rule 6); a message whose second line holds text is dropped. The body is
+  everything after that blank line, with leading and trailing blank lines removed, must hold at least one non blank
+  line, and may hold any number of paragraphs (rule 7).
+* **Footers**: not parsed, a deliberate departure from rules 8 to 10, 12, and 16. Lines such as `Refs: #123` or
+  `Co-Authored-By: ...` are ordinary body text, so a message whose body is only such lines is still kept.
+* **Breaking**: set only by a `!` before the header's colon (rule 13); a `BREAKING CHANGE:` line is body text and does
+  not mark the commit.
 * **No length limits**: the 72 character header is a convention, not part of the specification, so nothing is
   dropped or truncated for length. Shortening long headers is a display concern.
 
 Merge commits GitHub writes (`Merge pull request #12 from ...`) and the reverts git writes by default
 (`Revert "feat: ..."`) do not match the header, so they are not logged. A squash merge such as `feat: add search (#12)`
-is. A last paragraph that only happens to look like a footer, such as `Note: see the wiki`, is parsed as one.
+is only when its message has a body.
 
 ```go
 // Parses a comparison commit, timestamped by its committer date.

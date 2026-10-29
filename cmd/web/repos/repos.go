@@ -138,21 +138,12 @@ type ConventionalCommit struct {
 	// <[ConventionalCommit.Type]>(optional [ConventionalCommit.Scope])[optional !]: <[ConventionalCommit.Description]>
 	//
 	// [ConventionalCommit.Body]
-	//
-	// [ConventionalCommit.Footers]
 
-	Type        string   `json:"type"`     // lowercased, e.g. "feat"
-	Scope       string   `json:"scope"`    // as written, empty when the header has none
-	Breaking    bool     `json:"breaking"` // a ! before the header's colon, or a BREAKING CHANGE footer
-	Description string   `json:"description"`
-	Body        string   `json:"body"`              // the paragraphs between the header and the footers
-	Footers     []Footer `json:"footers,omitempty"` // in message order
-}
-
-// A footer of a Conventional Commit, e.g. "Refs: #123" or "Closes #42".
-type Footer struct {
-	Token string `json:"token"` // as written, e.g. "Co-Authored-By" or "BREAKING CHANGE"
-	Value string `json:"value"` // everything after the separator, which may span lines
+	Type        string `json:"type"`     // lowercased, e.g. "feat"
+	Scope       string `json:"scope"`    // as written, empty when the header has none
+	Breaking    bool   `json:"breaking"` // a ! before the header's colon
+	Description string `json:"description"`
+	Body        string `json:"body"` // every paragraph after the header, never empty
 }
 
 func New(ctx context.Context, client Client, gh Github, logger *slog.Logger) (*Repos, error) {

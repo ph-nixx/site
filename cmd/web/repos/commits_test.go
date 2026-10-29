@@ -9,53 +9,43 @@ import (
 )
 
 // [parseConventionalCommit] keeps every message that follows the rules in the RFC's Parsing commit messages, with its
-// type, scope, breaking marker, body, and footers, and drops every message that breaks one.
+// type, scope, breaking marker, and body, and drops every message that breaks one.
 func Test_parse_conventional_commit_follows_the_parsing_rules(t *testing.T) {
 	at := time.Unix(1_000_000, 0).UTC()
+	// every kept message needs a body; the header cases share this one
+	const why = "\n\nwhy"
 	commit := func(c ConventionalCommit) ConventionalCommit {
 		c.ID, c.RepoID, c.Timestamp = "abc", 7, at
+		if c.Body == "" {
+			c.Body = "why"
+		}
 		return c
 	}
-	coAuthor := Footer{Token: "Co-Authored-By", Value: "Claude <noreply@anthropic.com>"}
 
 	kept := []struct {
 		name    string
 		message string
 		want    ConventionalCommit
 	}{
-		{"header only", "feat: add search", commit(ConventionalCommit{Type: "feat", Description: "add search"})},
-		{"header with a trailing newline", "feat: add search\n", commit(ConventionalCommit{Type: "feat", Description: "add search"})},
-		{"any type", "chore: bump deps", commit(ConventionalCommit{Type: "chore", Description: "bump deps"})},
-		{"scope", "fix(parser): handle tabs", commit(ConventionalCommit{Type: "fix", Scope: "parser", Description: "handle tabs"})},
-		{"type is lowercased, scope kept as written", "FEAT(API): add search",
+		{"header and body", "feat: add search" + why, commit(ConventionalCommit{Type: "feat", Description: "add search"})},
+		{"trailing newline", "feat: add search" + why + "\n", commit(ConventionalCommit{Type: "feat", Description: "add search"})},
+		{"any type", "chore: bump deps" + why, commit(ConventionalCommit{Type: "chore", Description: "bump deps"})},
+		{"scope", "fix(parser): handle tabs" + why, commit(ConventionalCommit{Type: "fix", Scope: "parser", Description: "handle tabs"})},
+		{"type is lowercased, scope kept as written", "FEAT(API): add search" + why,
 			commit(ConventionalCommit{Type: "feat", Scope: "API", Description: "add search"})},
-		{"! marks breaking", "feat!: drop node 6", commit(ConventionalCommit{Type: "feat", Breaking: true, Description: "drop node 6"})},
-		{"scope and !", "feat(api)!: drop v1",
+		{"! marks breaking", "feat!: drop node 6" + why, commit(ConventionalCommit{Type: "feat", Breaking: true, Description: "drop node 6"})},
+		{"scope and !", "feat(api)!: drop v1" + why,
 			commit(ConventionalCommit{Type: "feat", Scope: "api", Breaking: true, Description: "drop v1"})},
-		{"squash merge", "feat: add search (#12)", commit(ConventionalCommit{Type: "feat", Description: "add search (#12)"})},
+		{"squash merge", "feat: add search (#12)" + why, commit(ConventionalCommit{Type: "feat", Description: "add search (#12)"})},
 		{"body of several paragraphs", "fix: x\n\nfirst paragraph\nstill first\n\nsecond paragraph",
 			commit(ConventionalCommit{Type: "fix", Description: "x", Body: "first paragraph\nstill first\n\nsecond paragraph"})},
-		{"body and footers", "fix: x\n\nwhy it changed\n\nRefs: #123\nCloses #42\nCo-Authored-By: Claude <noreply@anthropic.com>",
-			commit(ConventionalCommit{Type: "fix", Description: "x", Body: "why it changed", Footers: []Footer{
-				{Token: "Refs", Value: "#123"}, {Token: "Closes", Value: "#42"}, coAuthor,
-			}})},
-		{"footers only", "fix: x\n\nRefs: #1", commit(ConventionalCommit{Type: "fix", Description: "x", Footers: []Footer{{Token: "Refs", Value: "#1"}}})},
-		{"BREAKING CHANGE footer spanning lines", "feat: x\n\nBREAKING CHANGE: the config\nkey is renamed",
-			commit(ConventionalCommit{Type: "feat", Breaking: true, Description: "x", Footers: []Footer{
-				{Token: "BREAKING CHANGE", Value: "the config\nkey is renamed"},
-			}})},
-		{"BREAKING-CHANGE footer", "feat: x\n\nBREAKING-CHANGE: y",
-			commit(ConventionalCommit{Type: "feat", Breaking: true, Description: "x", Footers: []Footer{{Token: "BREAKING-CHANGE", Value: "y"}}})},
-		{"lowercase breaking change footer", "feat: x\n\nbreaking change: y",
-			commit(ConventionalCommit{Type: "feat", Breaking: true, Description: "x", Footers: []Footer{{Token: "breaking change", Value: "y"}}})},
-		{"both breaking markers", "feat!: x\n\nBREAKING CHANGE: y",
-			commit(ConventionalCommit{Type: "feat", Breaking: true, Description: "x", Footers: []Footer{{Token: "BREAKING CHANGE", Value: "y"}}})},
-		{"token with a space is body text", "feat: x\n\nSee also: the wiki",
-			commit(ConventionalCommit{Type: "feat", Description: "x", Body: "See also: the wiki"})},
-		{"footers only in the last paragraph", "feat: x\n\nRefs: #1\n\nmore text",
-			commit(ConventionalCommit{Type: "feat", Description: "x", Body: "Refs: #1\n\nmore text"})},
+		{"footer lines are body text", "fix: x\n\nwhy it changed\n\nRefs: #123\nCo-Authored-By: Claude <noreply@anthropic.com>",
+			commit(ConventionalCommit{Type: "fix", Description: "x", Body: "why it changed\n\nRefs: #123\nCo-Authored-By: Claude <noreply@anthropic.com>"})},
+		{"a footer line alone is a body", "fix: x\n\nRefs: #1", commit(ConventionalCommit{Type: "fix", Description: "x", Body: "Refs: #1"})},
+		{"BREAKING CHANGE line does not mark breaking", "feat: x\n\nBREAKING CHANGE: y",
+			commit(ConventionalCommit{Type: "feat", Description: "x", Body: "BREAKING CHANGE: y"})},
 		{"CRLF line endings", "fix: x\r\n\r\nwhy\r\n\r\nRefs: #1",
-			commit(ConventionalCommit{Type: "fix", Description: "x", Body: "why", Footers: []Footer{{Token: "Refs", Value: "#1"}}})},
+			commit(ConventionalCommit{Type: "fix", Description: "x", Body: "why\n\nRefs: #1"})},
 	}
 	for _, tt := range kept {
 		t.Run(tt.name, func(t *testing.T) {
@@ -71,6 +61,9 @@ func Test_parse_conventional_commit_follows_the_parsing_rules(t *testing.T) {
 
 	dropped := []struct{ name, message string }{
 		{"empty message", ""},
+		{"header only", "feat: add search"},
+		{"header with a trailing newline", "feat: add search\n"},
+		{"blank body", "feat: add search\n\n \n\n"},
 		{"no separator", "add search"},
 		{"space before the colon", "feat : add search"},
 		{"no space after the colon", "feat:add search"},
