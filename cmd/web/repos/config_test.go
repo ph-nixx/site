@@ -1,7 +1,6 @@
 package repos
 
 import (
-	"maps"
 	"testing"
 
 	"github.com/google/go-github/v91/github"
@@ -75,9 +74,25 @@ segment = "Blog"
 		"about":           "invalid in docs.toml: its title is not a string; skipped with its subtree, since it was never ingested",
 		"blog":            `invalid in docs.toml: its segment "Blog" is not a slug; skipped with its subtree, since it was never ingested`,
 
-		"reference.api.v1.deprecated": "nested deeper than 3 levels; ignored with its subtree",
+		"reference.api.v1.deprecated": "nested deeper than 3 levels, ignored with its subtree",
 	}
-	if !maps.Equal(got, want) {
-		t.Errorf("expected warnings %v, got %v", want, got)
+
+	for k, a := range want {
+		b, ok := got[k]
+		if !ok {
+			t.Errorf("expected the key %v to exist", k)
+			continue
+		}
+
+		if a != b {
+			t.Errorf("expected warnings %v, got %v", a, b)
+		}
+	}
+
+	for k := range got {
+		_, ok := want[k]
+		if !ok {
+			t.Errorf("key %v should not exist", k)
+		}
 	}
 }

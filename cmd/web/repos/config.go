@@ -14,12 +14,15 @@ import (
 	"github.com/google/go-github/v91/github"
 )
 
+const (
+	TOML_TABLE_TYPE = "Hash" // the string [toml.MetaData.Type] returns for a table
+)
+
 var (
 	ErrDocsSyntax  = errors.New("docs.toml syntax error") // log a warning and stop: the repo stays frozen
 	ErrCompare     = errors.New("compare failed")         // a failure: nothing is written
 	ErrStale       = errors.New("push already ingested")  // stop: a push at or past After was already ingested
 	ErrDocsRemoved = errors.New("docs.toml removed")      // deep clean: docs.toml is gone at a push that is not stale
-	ErrRetry       = errors.New("")
 )
 
 // A table name or segment in docs.toml.
@@ -160,7 +163,7 @@ func reconcileDocsConfig(docsToml, readMe File, event *github.PushEvent, cached 
 		if len(k) == MAX_DOC_DEPTH+1 {
 			cfg.Warnings = append(cfg.Warnings, DocWarning{
 				Key:    strings.Join(k, "."),
-				Reason: fmt.Sprintf("nested deeper than %d levels; ignored with its subtree", MAX_DOC_DEPTH),
+				Reason: fmt.Sprintf("nested deeper than %d levels, ignored with its subtree", MAX_DOC_DEPTH),
 			})
 		}
 	}
@@ -169,6 +172,7 @@ func reconcileDocsConfig(docsToml, readMe File, event *github.PushEvent, cached 
 			cfg.SVG = svg
 		}
 	}
+
 	if readMe.Status == FileFound && (refetchAll || changed[README_PATH]) {
 		cfg.ReadMe = readMe.Data
 	}
@@ -183,16 +187,19 @@ func reconcileDocsConfig(docsToml, readMe File, event *github.PushEvent, cached 
 			if n.Skipped {
 				continue // left out with its whole subtree
 			}
+
 			stack = append(stack, n.Children)
 			if n.Frozen || n.Path == "" {
 				continue
 			}
+
 			switch {
 			case refetchAll, !before[n.Path], changed[n.Path], n.Cached != nil && n.Cached.Frozen:
 				if !seen[n.Path] {
 					seen[n.Path] = true
 					cfg.UpdatePaths = append(cfg.UpdatePaths, n.Path)
 				}
+
 			case removed[n.Path]:
 				n.Missing = true
 				cfg.warn(n, "its file was removed in the comparison")
@@ -208,13 +215,16 @@ func tableKeys(md toml.MetaData) [][]string {
 	seen := map[string]bool{}
 	var keys [][]string
 	for _, k := range md.Keys() {
-		n := len(k) - 1 // a value's parents are tables
-		if md.Type(k...) == "Hash" {
-			n = len(k)
+		n := len(k) - 1 // first assume the key ends with a field
+		if md.Type(k...) == TOML_TABLE_TYPE {
+			n = len(k) // the key ends with a table
 		}
+
+		// save all prefix paths up to the last table in k : [toml.Key], and skip any we have already seen
 		for i := 1; i <= n; i++ {
-			if p := strings.Join(k[:i], "."); !seen[p] {
-				seen[p] = true
+			path := strings.Join(k[:i], ".")
+			if !seen[path] {
+				seen[path] = true
 				keys = append(keys, k[:i])
 			}
 		}
@@ -225,38 +235,55 @@ func tableKeys(md toml.MetaData) [][]string {
 // Parses the tables directly under prefix into nodes in docs.toml order, then resolves each against its cached
 // counterpart in cached: an invalid node is Frozen with its cached segment and title when it has one, and Skipped
 // when it does not, reported through warn either way.
-func parseNodes(doc map[string]any, keys [][]string, prefix []string, cached map[string]*DocSection,
-	warn func(n *DocNode, problem string)) []DocNode {
+func parseNodes(
+	doc map[string]any,
+	keys [][]string,
+	prefix []string,
+	cached map[string]*DocSection,
+	warn func(n *DocNode, problem string),
+) []DocNode {
 	var (
 		nodes    []DocNode
 		problems []string // why each node is invalid, empty for a valid one
 	)
+
+	// every recursive call loops over every key just to find the nodes direct children, this is O(n^2) time complexity
 	for _, k := range keys {
+		// skip unless key is a direct child of prefix
+		// or is the project table key
 		if len(k) != len(prefix)+1 || !slices.Equal(k[:len(prefix)], prefix) || slices.Equal(k, []string{"project"}) {
 			continue
 		}
+
 		table, ok := lookup(doc, k)
 		if !ok {
 			continue // an array of tables, not a node
 		}
-		n, problem := parseNode(k, table)
+
+		n, err := parseNode(k, table)
 		if len(k) < MAX_DOC_DEPTH {
 			n.Children = parseNodes(doc, keys, k, cached, warn)
 		} // deeper tables are ignored, and reconcileDocsConfig warns about them
-		nodes, problems = append(nodes, n), append(problems, problem)
+
+		if err != nil {
+			problems = append(problems, err.Error())
+		} else {
+			problems = append(problems, "")
+		}
+		nodes = append(nodes, n)
 	}
 
-	// siblings that resolve to the same segment are all invalid
-	segments := map[string]int{}
+	segmentFreq := map[string]int{}
 	for _, n := range nodes {
-		segments[n.Segment]++
+		segmentFreq[n.Segment]++
 	}
 	for i := range nodes {
 		n := &nodes[i]
 		n.Cached = cached[n.Key]
-		if problems[i] == "" && segments[n.Segment] > 1 {
+		if problems[i] == "" && segmentFreq[n.Segment] > 1 {
 			problems[i] = fmt.Sprintf("its segment %q is shared with a sibling", n.Segment)
 		}
+
 		switch {
 		case problems[i] == "":
 		case n.Cached != nil:
@@ -273,54 +300,64 @@ func parseNodes(doc map[string]any, keys [][]string, prefix []string, cached map
 // Reads one table's segment, title, and path, defaulting segment and title from its table name; problem describes the
 // first node level error found, and is empty when there is none: a name or segment that is not a slug, a value that is
 // not a string, a section without a path, or a path that does not end in .md.
-func parseNode(key []string, table map[string]any) (n DocNode, problem string) {
-	fail := func(format string, args ...any) {
-		if problem == "" {
-			problem = fmt.Sprintf(format, args...)
+func parseNode(key []string, table map[string]any) (DocNode, error) {
+	field := func(field, d string) (string, error) {
+		v, ok := table[field]
+		if !ok {
+			return d, nil
 		}
+
+		s, ok := v.(string)
+		if !ok {
+			return "", fmt.Errorf("its %s is not a string", field)
+		}
+
+		return s, nil
 	}
+	var err error
+	n := DocNode{Key: strings.Join(key, ".")}
 	name := key[len(key)-1]
 	if !slugPattern.MatchString(name) {
-		fail("its table name %q is not a slug", name)
+		return n, fmt.Errorf("its table name %q is not a slug", name)
 	}
-	field := func(field, fallback string) string {
-		v, set := table[field]
-		if !set {
-			return fallback
-		}
-		s, isString := v.(string)
-		if !isString {
-			fail("its %s is not a string", field)
-		}
-		return s
+
+	if n.Segment, err = field("segment", name); err != nil {
+		return n, err
 	}
-	n = DocNode{
-		Key:     strings.Join(key, "."),
-		Segment: field("segment", name),
-		Title:   field("title", capitalize(strings.ReplaceAll(name, "-", " "))),
-		Path:    field("path", ""),
+
+	if n.Title, err = field("title", capitalize(strings.ReplaceAll(name, "-", " "))); err != nil {
+		return n, err
+	}
+
+	if n.Path, err = field("path", ""); err != nil {
+		return n, err
 	}
 
 	switch {
 	case !slugPattern.MatchString(n.Segment):
-		fail("its segment %q is not a slug", n.Segment)
+		err = fmt.Errorf("its segment %q is not a slug", n.Segment)
 	case n.Path == "" && len(key) > 1:
-		fail("it is a section without a path")
+		err = fmt.Errorf("it is a section without a path")
 	case n.Path != "" && !strings.HasSuffix(n.Path, ".md"):
-		fail("its path %q does not end in .md", n.Path)
+		err = fmt.Errorf("its path %q does not end in .md", n.Path)
 	}
-	return n, problem
+	return n, err
 }
 
-// Walks doc down key to the table it names; ok is false when any step is not a table.
-func lookup(doc map[string]any, key []string) (table map[string]any, ok bool) {
-	table = doc
+// Walks doc down key to the table it names, ok is false when any step is not a table.
+func lookup(doc map[string]any, key []string) (map[string]any, bool) {
+	if len(key) == 0 {
+		return nil, false
+	}
+
 	for _, name := range key {
-		if table, ok = table[name].(map[string]any); !ok {
+		table, ok := doc[name].(map[string]any)
+		if !ok {
 			return nil, false
 		}
+		doc = table
 	}
-	return table, true
+	return doc, true
 }
 
 // Upper cases the first character of s.
