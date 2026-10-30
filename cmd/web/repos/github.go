@@ -64,6 +64,7 @@ func (g *githubClient) FetchFiles(ctx context.Context, owner, repo, sha string, 
 		if err != nil {
 			return nil, err
 		}
+
 		var resp struct {
 			Data struct {
 				Repository map[string]*graphqlBlob `json:"repository"`
@@ -75,11 +76,21 @@ func (g *githubClient) FetchFiles(ctx context.Context, owner, repo, sha string, 
 		if _, err := g.Do(req, &resp); err != nil {
 			return nil, err // a non 200 status, as a *github.ErrorResponse
 		}
+
 		if len(resp.Errors) > 0 {
 			return nil, fmt.Errorf("graphql: %s", resp.Errors[0].Message)
 		}
+
 		for i, path := range batch {
-			files[path] = resp.Data.Repository["f"+strconv.Itoa(i)].file()
+			b := resp.Data.Repository["f"+strconv.Itoa(i)]
+			switch {
+			case b == nil:
+				files[path] = File{Status: FileMissing}
+			case b.Text == nil, b.IsBinary, b.IsTruncated:
+				files[path] = File{Status: FileUnreadable}
+			default:
+				files[path] = File{Status: FileFound, Data: []byte(*b.Text)}
+			}
 		}
 	}
 	return files, nil
@@ -90,17 +101,6 @@ type graphqlBlob struct {
 	Text        *string `json:"text"`
 	IsBinary    bool    `json:"isBinary"`
 	IsTruncated bool    `json:"isTruncated"`
-}
-
-// Classifies an aliased field as a File: a null field is missing, and a blob without inline text is unreadable.
-func (b *graphqlBlob) file() File {
-	switch {
-	case b == nil:
-		return File{Status: FileMissing}
-	case b.Text == nil, b.IsBinary, b.IsTruncated:
-		return File{Status: FileUnreadable}
-	}
-	return File{Status: FileFound, Data: []byte(*b.Text)}
 }
 
 // Quotes s as a GraphQL string literal; every escape json.Marshal emits is also a GraphQL string escape.
