@@ -70,7 +70,11 @@ func (a *App) doc(w http.ResponseWriter, r *http.Request) {
 		var built []sidebarEntry
 		for _, s := range sections {
 			route := prefix + s.Segment
-			e := sidebarEntry{Title: s.Title, Route: route, Children: entries(route+"/", s.SubSections)}
+			e := sidebarEntry{
+				Title:    s.Title,
+				Route:    route,
+				Children: entries(route+"/", s.SubSections),
+			}
 			if s.Path != "" {
 				e.Href = "/" + name + "/" + route
 			}
@@ -79,7 +83,6 @@ func (a *App) doc(w http.ResponseWriter, r *http.Request) {
 		}
 		return built
 	}
-
 	all, _ := a.repos.Get()
 	a.render(
 		w,
