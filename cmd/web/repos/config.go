@@ -112,7 +112,7 @@ func reconcileDocsConfig(docsToml, readMe File, event *github.PushEvent, cached 
 	var doc map[string]any
 	md, err := toml.Decode(string(docsToml.Data), &doc)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrDocsSyntax, err)
+		return nil, fmt.Errorf("%w %w", ErrDocsSyntax, err)
 	}
 
 	// only an ahead comparison lists what changed since S; anything else refetches every referenced path

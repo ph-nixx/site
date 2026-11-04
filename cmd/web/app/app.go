@@ -86,7 +86,7 @@ func (a *App) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /{$}", a.home)
 	mux.HandleFunc("GET /{name}", a.doc)
 	mux.HandleFunc("GET /{name}/{route...}", a.doc)
-	mux.HandleFunc("POST /hooks/github", a.githubPushEvent)
+	mux.HandleFunc("POST /hooks/github", a.githubEvent)
 
 	return mux
 }

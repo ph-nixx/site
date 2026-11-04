@@ -21,15 +21,21 @@ import (
 	"github.com/yuin/goldmark/util"
 )
 
+var (
+	ErrRetry                     = errors.New("")
+	ErrHitRetryLimit             = fmt.Errorf("overtaken after %d restarts", MAX_RESTARTS)
+	ErrConfigUnreadable          = fmt.Errorf("docs.toml is binary or too large to read; the repo stays frozen until a push fixes it")
+	ErrReadMeMissingAndNotCached = fmt.Errorf("README.md is missing or unreadable on the first ingest, where it is required; nothing is ingested")
+	ErrReadMeMissing             = fmt.Errorf("README.md is missing or unreadable; the project page keeps its cached HTML")
+)
+
 // Owns the whole ingestion of one push the handler accepted, from reading the cache to committing the result,
 // restarting from the new LastIngestedSHA when another push commits first.
-func (r *Repos) Set(ctx context.Context, event *github.PushEvent) error {
-	owner, name, after := event.GetRepo().GetOwner().GetLogin(), event.GetRepo().GetName(), event.GetAfter()
-	log := r.logger.With("repo", event.GetRepo().GetFullName(), "after", after)
+func (r *Repos) SetPushEvent(ctx context.Context, event *github.PushEvent) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var files map[string]File // fetched once: a restart reuses them, since After has not changed
-	for restarts := 0; ; restarts++ {
+	for restarts := 0; restarts < MAX_RESTARTS; restarts++ {
 		var cached *Repo
 		if restarts == 0 {
 			if repos, ok := r.Get(event.GetRepo().GetID()); ok {
@@ -40,119 +46,130 @@ func (r *Repos) Set(ctx context.Context, event *github.PushEvent) error {
 			if errors.Is(err, redis.Nil) {
 				return nil // a deep clean committed first
 			}
+
 			if err != nil {
 				return err
 			}
+
 			if cached, err = newRepo(data); err != nil {
 				return err
 			}
 		}
 
-		var s string
-		if cached != nil {
-			s = cached.LastIngestedSHA
-		}
-
-		var (
-			comp    *github.CommitsComparison
-			compErr error
-			wg      sync.WaitGroup
-		)
-		if s != "" {
-			wg.Go(func() { comp, compErr = r.github.Compare(ctx, owner, name, s, after) })
-		}
-
-		if files == nil {
-			var err error
-			if files, err = r.github.FetchFiles(ctx, owner, name, after, DOCS_CONFIG_PATH, README_PATH); err != nil {
-				return err
-			}
-		}
-
-		// stops that do not depend on the comparison; none of them write, so they are safe before the stale check
-		docsToml, readMe := files[DOCS_CONFIG_PATH], files[README_PATH]
-		switch {
-		case docsToml.Status == FileUnreadable:
-			log.Warn("docs.toml is binary or too large to read; the repo stays frozen until a push fixes it")
-			return nil
-		case docsToml.Status == FileMissing && s == "":
-			return nil // not eligible
-		case readMe.Status != FileFound && cached == nil:
-			log.Warn("README.md is missing or unreadable on the first ingest, where it is required; nothing is ingested")
-			return nil
-		}
-		wg.Wait()
-		var ghErr *github.ErrorResponse
-		if compErr != nil && !(errors.As(compErr, &ghErr) &&
-			(ghErr.Response.StatusCode == http.StatusNotFound || ghErr.Response.StatusCode >= http.StatusInternalServerError)) {
-			return fmt.Errorf("compare %s...%s: %w", s, after, compErr) // logged by the caller
-		}
-
-		cfg, err := reconcileDocsConfig(docsToml, readMe, event, cached, comp, compErr)
-		switch {
-		case errors.Is(err, ErrStale):
-			return nil
-		case errors.Is(err, ErrDocsRemoved):
-			ok, err := r.dropFromCache(ctx, cached.ID, s)
-			if err != nil || ok {
-				return err
-			}
-			// another push committed first: restart from its SHA, whose comparison either stops this push as stale
-			// or still finds docs.toml gone and deep cleans again
-			if restarts == MAX_RESTARTS {
-				return fmt.Errorf("overtaken after %d restarts", MAX_RESTARTS)
-			}
+		err := r.ingestPushEvent(ctx, event, cached, files)
+		if errors.Is(err, ErrRetry) {
 			continue
-		case errors.Is(err, ErrDocsSyntax):
-			log.Warn("docs.toml does not parse; the repo stays frozen until a push fixes it", "err", err)
-			return nil
-		case err != nil:
+		}
+
+		return err
+	}
+	return ErrHitRetryLimit
+}
+
+func (r *Repos) ingestPushEvent(
+	ctx context.Context,
+	event *github.PushEvent,
+	cached *Repo,
+	files map[string]File,
+) error {
+	owner, name, after := event.GetRepo().GetOwner().GetName(), event.GetRepo().GetName(), event.GetAfter()
+	var s string
+	if cached != nil {
+		s = cached.LastIngestedSHA
+	}
+
+	var (
+		comp    *github.CommitsComparison
+		compErr error
+		wg      sync.WaitGroup
+	)
+	if s != "" {
+		wg.Go(func() { comp, compErr = r.github.Compare(ctx, owner, name, s, after) })
+	}
+
+	if files == nil {
+		var err error
+		if files, err = r.github.FetchFiles(ctx, owner, name, after, DOCS_CONFIG_PATH, README_PATH); err != nil {
 			return err
-		}
-
-		// process two: the push's commits, which process one's commit writes with the docs so neither is logged alone
-		var commits []ConventionalCommit
-		if cfg.PushCommits {
-			for _, c := range event.Commits {
-				if cc, ok := fromPushCommit(event.GetRepo(), c); ok {
-					commits = append(commits, cc)
-				}
-			}
-		} else {
-			for _, c := range comp.Commits {
-				if cc, ok := fromComparisonCommit(event.GetRepo(), c); ok {
-					commits = append(commits, cc)
-				}
-			}
-		}
-
-		// process one
-		html, err := r.fetchDocs(ctx, cfg)
-		if err != nil {
-			return err
-		}
-
-		if readMe.Status != FileFound {
-			log.Warn("README.md is missing or unreadable; the project page keeps its cached HTML")
-		}
-
-		for _, w := range cfg.Warnings {
-			log.Warn("docs.toml node is invalid", "key", w.Key, "reason", w.Reason)
-		}
-		result, err := r.commitDocs(ctx, buildRepo(event, cfg), s, html, commits)
-		if err != nil {
-			return err
-		}
-
-		// Committed, or Superseded by a push GitHub received later: either way this push is done
-		if result != Overtaken {
-			return nil
-		}
-
-		if restarts == MAX_RESTARTS {
-			return fmt.Errorf("overtaken after %d restarts", MAX_RESTARTS)
 		}
 	}
+
+	// stops that do not depend on the comparison; none of them write, so they are safe before the stale check
+	docsToml, readMe := files[DOCS_CONFIG_PATH], files[README_PATH]
+	switch {
+	case docsToml.Status == FileUnreadable:
+		return ErrConfigUnreadable
+	case docsToml.Status == FileMissing && s == "":
+		return nil // not eligible
+	case readMe.Status != FileFound && cached == nil:
+		return ErrReadMeMissingAndNotCached
+	}
+	wg.Wait()
+	var ghErr *github.ErrorResponse
+	if compErr != nil && !(errors.As(compErr, &ghErr) &&
+		(ghErr.Response.StatusCode == http.StatusNotFound || ghErr.Response.StatusCode >= http.StatusInternalServerError)) {
+		return fmt.Errorf("compare %s...%s: %w", s, event.GetAfter(), compErr) // logged by the caller
+	}
+
+	cfg, err := reconcileDocsConfig(docsToml, readMe, event, cached, comp, compErr)
+	switch {
+	case errors.Is(err, ErrStale):
+		return nil
+	case errors.Is(err, ErrDocsRemoved):
+		ok, err := r.dropFromCache(ctx, cached.ID, s)
+		if err != nil || ok {
+			return err
+		}
+		// another push committed first: restart from its SHA, whose comparison either stops this push as stale
+		// or still finds docs.toml gone and deep cleans again
+		// if restarts == MAX_RESTARTS {
+		// 	return fmt.Errorf("overtaken after %d restarts", MAX_RESTARTS)
+		// }
+		return ErrRetry
+	case err != nil:
+		return err
+	}
+
+	// process two: the push's commits, which process one's commit writes with the docs so neither is logged alone
+	var commits []ConventionalCommit
+	if cfg.PushCommits {
+		for _, c := range event.Commits {
+			if cc, ok := fromPushCommit(event.GetRepo(), c); ok {
+				commits = append(commits, cc)
+			}
+		}
+	} else {
+		for _, c := range comp.Commits {
+			if cc, ok := fromComparisonCommit(event.GetRepo(), c); ok {
+				commits = append(commits, cc)
+			}
+		}
+	}
+
+	// process one
+	html, err := r.fetchDocs(ctx, cfg)
+	if err != nil {
+		return err
+	}
+
+	if readMe.Status != FileFound {
+		return ErrReadMeMissing
+	}
+
+	for _, w := range cfg.Warnings {
+		r.logger.Warn("docs.toml node is invalid", "key", w.Key, "reason", w.Reason)
+	}
+	result, err := r.commitDocs(ctx, buildRepo(event, cfg), s, html, commits)
+	if err != nil {
+		return err
+	}
+
+	if result == Overtaken {
+		return ErrRetry
+	}
+
+	// Committed, or Superseded by a push GitHub received later: either way this push is done
+	return nil
 }
 
 // Fetches every path in cfg.UpdatePaths at cfg.SHA through one FetchFiles call and renders them, using cfg.ReadMe

@@ -371,7 +371,7 @@ func Test_set_restarts_a_deep_clean_another_push_overtook(t *testing.T) {
 			event := &github.PushEvent{After: github.Ptr("c"), Repo: &github.PushEventRepository{
 				ID: github.Ptr(int64(id)), Name: github.Ptr("my-lib"), Owner: &github.User{Login: github.Ptr("owner")},
 			}}
-			if err := r.Set(t.Context(), event); err != nil {
+			if err := r.SetPushEvent(t.Context(), event); err != nil {
 				t.Fatal("expected no error, got", err)
 			}
 

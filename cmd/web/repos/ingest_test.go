@@ -1,15 +1,12 @@
 package repos
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"errors"
-	"log/slog"
 	"maps"
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -47,7 +44,7 @@ var errUnimplemented = errors.New("reached unimplemented code")
 // [Repos.Set] returns without waiting for Compare on every stop that does not depend on the comparison,
 // canceling it, and waits for Compare on the cases process zero must classify first.
 func Test_set_stops_without_waiting_for_compare_when_the_files_alone_decide(t *testing.T) {
-	found := File{Status: FileFound, Data: []byte("x")} // not TOML: a case past process zero stops at ErrDocsSyntax
+	file := File{Status: FileFound, Data: []byte("x")} // not TOML: a case past process zero stops at ErrDocsSyntax
 	missing := File{Status: FileMissing}
 	unreadable := File{Status: FileUnreadable}
 	fetchErr := errors.New("boom")
@@ -58,18 +55,18 @@ func Test_set_stops_without_waiting_for_compare_when_the_files_alone_decide(t *t
 		docsToml File
 		readMe   File
 		fetchErr error
-		stops    bool  // Set returns without waiting for Compare
-		err      error // what Set returns
+		stops    bool // Set returns without waiting for Compare
+		err      error
 	}{
-		{"fetch error", true, found, found, fetchErr, true, fetchErr},
-		{"docs.toml unreadable", true, unreadable, found, nil, true, nil},
-		{"docs.toml unreadable on first ingest", false, unreadable, found, nil, true, nil},
-		{"docs.toml missing on first ingest", false, missing, found, nil, true, nil},
-		{"README.md missing on first ingest", false, found, missing, nil, true, nil},
-		{"README.md unreadable on first ingest", false, found, unreadable, nil, true, nil},
-		{"README.md missing once cached", true, found, missing, nil, false, nil},
-		{"docs.toml missing once cached", true, missing, found, nil, false, errUnimplemented},
-		{"both files found on first ingest", false, found, found, nil, false, nil},
+		{"fetch error", true, file, file, fetchErr, true, fetchErr},
+		{"docs.toml unreadable", true, unreadable, file, nil, true, ErrConfigUnreadable},
+		{"docs.toml unreadable on first ingest", false, unreadable, file, nil, true, ErrConfigUnreadable},
+		{"docs.toml missing on first ingest", false, missing, file, nil, true, nil},
+		{"README.md missing on first ingest", false, file, missing, nil, true, ErrReadMeMissingAndNotCached},
+		{"README.md unreadable on first ingest", false, file, unreadable, nil, true, ErrReadMeMissingAndNotCached},
+		{"README.md missing once cached", true, file, missing, nil, false, ErrDocsSyntax},
+		{"docs.toml missing once cached", true, missing, file, nil, false, errUnimplemented},
+		{"both files file on first ingest", false, file, file, nil, false, ErrDocsSyntax},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -98,7 +95,7 @@ func Test_set_stops_without_waiting_for_compare_when_the_files_alone_decide(t *t
 						done <- errUnimplemented
 					}
 				}()
-				done <- r.Set(t.Context(), event)
+				done <- r.SetPushEvent(t.Context(), event)
 			}()
 			var err error
 			select {
@@ -107,7 +104,7 @@ func Test_set_stops_without_waiting_for_compare_when_the_files_alone_decide(t *t
 				t.Fatal("Set waited for a Compare it should have canceled")
 			}
 			if !errors.Is(err, tt.err) {
-				t.Error("expected", tt.err, "got", err)
+				t.Error("expected:", tt.err, "got:", err)
 			}
 
 			if !tt.cached {
@@ -145,7 +142,7 @@ func Test_set_does_not_fail_on_a_diverged_comparison(t *testing.T) {
 		},
 	}
 
-	if err := r.Set(t.Context(), event); err != nil {
+	if err := r.SetPushEvent(t.Context(), event); err != nil {
 		t.Error("expected no error", "got", err)
 	}
 }
@@ -222,43 +219,6 @@ func Test_fetch_docs_marks_missing_the_nodes_whose_files_were_not_found(t *testi
 	}
 	if !maps.Equal(warned, wantWarned) {
 		t.Error("expected warnings", wantWarned, "got", warned)
-	}
-}
-
-// [Repos.Set] logs a warning, tagged with the repo and the pushed SHA, for every stop that freezes the repo or leaves it
-// out, and for every invalid docs.toml node.
-func Test_set_logs_why_it_stops(t *testing.T) {
-	found := func(data string) File { return File{Status: FileFound, Data: []byte(data)} }
-	tests := []struct {
-		name     string
-		docsToml File
-		readMe   File
-		logged   string
-	}{
-		{"unreadable docs.toml", File{Status: FileUnreadable}, found("# x"), "docs.toml is binary or too large"},
-		{"README.md missing on the first ingest", found(""), File{Status: FileMissing}, "README.md is missing or unreadable on the first ingest"},
-		{"docs.toml syntax error", found("[guides"), found("# x"), "docs.toml does not parse"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var buf bytes.Buffer
-			gh := newMockGithub(map[string]File{DOCS_CONFIG_PATH: tt.docsToml, README_PATH: tt.readMe}, nil, false)
-			r := Repos{github: gh, repoCache: RepoCache{}, logger: slog.New(slog.NewTextHandler(&buf, nil))}
-			event := &github.PushEvent{After: github.Ptr("b"), Repo: &github.PushEventRepository{
-				ID: github.Ptr(int64(1)), Name: github.Ptr("one"), FullName: github.Ptr("owner/one"),
-				Owner: &github.User{Login: github.Ptr("owner")},
-			}}
-
-			if err := r.Set(t.Context(), event); err != nil {
-				t.Fatal("expected no error, got", err)
-			}
-			out := buf.String()
-			for _, want := range []string{"level=WARN", tt.logged, "repo=owner/one", "after=b"} {
-				if !strings.Contains(out, want) {
-					t.Errorf("expected the log to contain %q, got %q", want, out)
-				}
-			}
-		})
 	}
 }
 
