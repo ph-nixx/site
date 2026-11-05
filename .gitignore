@@ -10,4 +10,4 @@ tailwind**
 env*
 
 # artifacts
-static/*.css
+static/output.css
