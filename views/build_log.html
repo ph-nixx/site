@@ -16,7 +16,8 @@
 	{{if .}}
 	<ol class="list-none border-t border-border">
 		{{range .}}
-		<li class="border-b border-border last:border-b-0 transition-colors duration-[var(--dur)] ease-[var(--ease-out)] hover:bg-surface-1">
+		<li
+			class="border-b border-border last:border-b-0 transition-colors duration-[var(--dur)] ease-[var(--ease-out)] hover:bg-surface-1">
 			<a href="{{.Href}}" target="_blank" rel="noreferrer noopener"
 				class="group flex items-center gap-s3 w-full px-s3 py-s4 text-md leading-[1.4] text-fg-muted no-underline transition-colors duration-[var(--dur)] ease-[var(--ease-out)] hover:text-fg focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-bg),0_0_0_4px_var(--color-focus)]">
 				<span class="w-[54px] shrink-0 font-mono text-xs text-fg-subtle">{{.Date}}</span>
@@ -35,7 +36,168 @@
 		{{end}}
 	</ol>
 	{{else}}
-	<p class="self-start pt-s4 text-md text-fg-subtle">No commits in the last 90 days.</p>
+	<ol class="border-t border-[color:var(--color-border)]">
+		<!-- Row 1 (58%) -->
+		<li class="border-b border-[color:var(--color-border)] last:border-b-0">
+			<div class="flex items-center gap-[var(--spacing-s3)] px-[var(--spacing-s3)] py-[var(--spacing-s4)]">
+				<span
+					class="block h-[13px] w-[54px] shrink-0 rounded-[var(--radius-sm)] bg-[linear-gradient(100deg,var(--color-surface-2)_30%,var(--color-surface-3)_50%,var(--color-surface-2)_70%)] bg-[length:200%_100%] animate-[skel-wave_2.8s_linear_infinite] motion-reduce:animate-none"></span>
+				<span
+					class="inline-flex w-[62px] shrink-0 font-[family-name:var(--font-mono)] text-[length:var(--text-xs)] text-[color:var(--color-border-strong)]">
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-a_0.66s_steps(1,end)_-0.05s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-c_0.66s_steps(1,end)_-0.31s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-b_0.66s_steps(1,end)_-0.12s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-d_0.66s_steps(1,end)_-0.44s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-b_0.66s_steps(1,end)_-0.22s_infinite] motion-reduce:before:animate-none"></span>
+				</span>
+				<span
+					class="block h-[13px] w-[58%] rounded-[var(--radius-sm)] bg-[linear-gradient(100deg,var(--color-surface-2)_30%,var(--color-surface-3)_50%,var(--color-surface-2)_70%)] bg-[length:200%_100%] animate-[skel-wave_2.8s_linear_infinite] motion-reduce:animate-none"></span>
+			</div>
+		</li>
+
+		<!-- Row 2 (44%) -->
+		<li class="border-b border-[color:var(--color-border)] last:border-b-0">
+			<div class="flex items-center gap-[var(--spacing-s3)] px-[var(--spacing-s3)] py-[var(--spacing-s4)]">
+				<span
+					class="block h-[13px] w-[54px] shrink-0 rounded-[var(--radius-sm)] bg-[linear-gradient(100deg,var(--color-surface-2)_30%,var(--color-surface-3)_50%,var(--color-surface-2)_70%)] bg-[length:200%_100%] animate-[skel-wave_2.8s_linear_infinite] motion-reduce:animate-none"></span>
+				<span
+					class="inline-flex w-[62px] shrink-0 font-[family-name:var(--font-mono)] text-[length:var(--text-xs)] text-[color:var(--color-border-strong)]">
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-a_0.66s_steps(1,end)_-0.05s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-c_0.66s_steps(1,end)_-0.31s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-b_0.66s_steps(1,end)_-0.12s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-d_0.66s_steps(1,end)_-0.44s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-b_0.66s_steps(1,end)_-0.22s_infinite] motion-reduce:before:animate-none"></span>
+				</span>
+				<span
+					class="block h-[13px] w-[44%] rounded-[var(--radius-sm)] bg-[linear-gradient(100deg,var(--color-surface-2)_30%,var(--color-surface-3)_50%,var(--color-surface-2)_70%)] bg-[length:200%_100%] animate-[skel-wave_2.8s_linear_infinite] motion-reduce:animate-none"></span>
+			</div>
+		</li>
+
+		<!-- Row 3 (66%) -->
+		<li class="border-b border-[color:var(--color-border)] last:border-b-0">
+			<div class="flex items-center gap-[var(--spacing-s3)] px-[var(--spacing-s3)] py-[var(--spacing-s4)]">
+				<span
+					class="block h-[13px] w-[54px] shrink-0 rounded-[var(--radius-sm)] bg-[linear-gradient(100deg,var(--color-surface-2)_30%,var(--color-surface-3)_50%,var(--color-surface-2)_70%)] bg-[length:200%_100%] animate-[skel-wave_2.8s_linear_infinite] motion-reduce:animate-none"></span>
+				<span
+					class="inline-flex w-[62px] shrink-0 font-[family-name:var(--font-mono)] text-[length:var(--text-xs)] text-[color:var(--color-border-strong)]">
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-a_0.66s_steps(1,end)_-0.05s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-c_0.66s_steps(1,end)_-0.31s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-b_0.66s_steps(1,end)_-0.12s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-d_0.66s_steps(1,end)_-0.44s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-b_0.66s_steps(1,end)_-0.22s_infinite] motion-reduce:before:animate-none"></span>
+				</span>
+				<span
+					class="block h-[13px] w-[66%] rounded-[var(--radius-sm)] bg-[linear-gradient(100deg,var(--color-surface-2)_30%,var(--color-surface-3)_50%,var(--color-surface-2)_70%)] bg-[length:200%_100%] animate-[skel-wave_2.8s_linear_infinite] motion-reduce:animate-none"></span>
+			</div>
+		</li>
+
+		<!-- Row 4 (39%) -->
+		<li class="border-b border-[color:var(--color-border)] last:border-b-0">
+			<div class="flex items-center gap-[var(--spacing-s3)] px-[var(--spacing-s3)] py-[var(--spacing-s4)]">
+				<span
+					class="block h-[13px] w-[54px] shrink-0 rounded-[var(--radius-sm)] bg-[linear-gradient(100deg,var(--color-surface-2)_30%,var(--color-surface-3)_50%,var(--color-surface-2)_70%)] bg-[length:200%_100%] animate-[skel-wave_2.8s_linear_infinite] motion-reduce:animate-none"></span>
+				<span
+					class="inline-flex w-[62px] shrink-0 font-[family-name:var(--font-mono)] text-[length:var(--text-xs)] text-[color:var(--color-border-strong)]">
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-a_0.66s_steps(1,end)_-0.05s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-c_0.66s_steps(1,end)_-0.31s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-b_0.66s_steps(1,end)_-0.12s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-d_0.66s_steps(1,end)_-0.44s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-b_0.66s_steps(1,end)_-0.22s_infinite] motion-reduce:before:animate-none"></span>
+				</span>
+				<span
+					class="block h-[13px] w-[39%] rounded-[var(--radius-sm)] bg-[linear-gradient(100deg,var(--color-surface-2)_30%,var(--color-surface-3)_50%,var(--color-surface-2)_70%)] bg-[length:200%_100%] animate-[skel-wave_2.8s_linear_infinite] motion-reduce:animate-none"></span>
+			</div>
+		</li>
+
+		<!-- Row 5 (52%) -->
+		<li class="border-b border-[color:var(--color-border)] last:border-b-0">
+			<div class="flex items-center gap-[var(--spacing-s3)] px-[var(--spacing-s3)] py-[var(--spacing-s4)]">
+				<span
+					class="block h-[13px] w-[54px] shrink-0 rounded-[var(--radius-sm)] bg-[linear-gradient(100deg,var(--color-surface-2)_30%,var(--color-surface-3)_50%,var(--color-surface-2)_70%)] bg-[length:200%_100%] animate-[skel-wave_2.8s_linear_infinite] motion-reduce:animate-none"></span>
+				<span
+					class="inline-flex w-[62px] shrink-0 font-[family-name:var(--font-mono)] text-[length:var(--text-xs)] text-[color:var(--color-border-strong)]">
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-a_0.66s_steps(1,end)_-0.05s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-c_0.66s_steps(1,end)_-0.31s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-b_0.66s_steps(1,end)_-0.12s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-d_0.66s_steps(1,end)_-0.44s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-b_0.66s_steps(1,end)_-0.22s_infinite] motion-reduce:before:animate-none"></span>
+				</span>
+				<span
+					class="block h-[13px] w-[52%] rounded-[var(--radius-sm)] bg-[linear-gradient(100deg,var(--color-surface-2)_30%,var(--color-surface-3)_50%,var(--color-surface-2)_70%)] bg-[length:200%_100%] animate-[skel-wave_2.8s_linear_infinite] motion-reduce:animate-none"></span>
+			</div>
+		</li>
+
+		<!-- Row 6 (58%) -->
+		<li class="border-b border-[color:var(--color-border)] last:border-b-0">
+			<div class="flex items-center gap-[var(--spacing-s3)] px-[var(--spacing-s3)] py-[var(--spacing-s4)]">
+				<span
+					class="block h-[13px] w-[54px] shrink-0 rounded-[var(--radius-sm)] bg-[linear-gradient(100deg,var(--color-surface-2)_30%,var(--color-surface-3)_50%,var(--color-surface-2)_70%)] bg-[length:200%_100%] animate-[skel-wave_2.8s_linear_infinite] motion-reduce:animate-none"></span>
+				<span
+					class="inline-flex w-[62px] shrink-0 font-[family-name:var(--font-mono)] text-[length:var(--text-xs)] text-[color:var(--color-border-strong)]">
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-a_0.66s_steps(1,end)_-0.05s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-c_0.66s_steps(1,end)_-0.31s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-b_0.66s_steps(1,end)_-0.12s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-d_0.66s_steps(1,end)_-0.44s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-b_0.66s_steps(1,end)_-0.22s_infinite] motion-reduce:before:animate-none"></span>
+				</span>
+				<span
+					class="block h-[13px] w-[58%] rounded-[var(--radius-sm)] bg-[linear-gradient(100deg,var(--color-surface-2)_30%,var(--color-surface-3)_50%,var(--color-surface-2)_70%)] bg-[length:200%_100%] animate-[skel-wave_2.8s_linear_infinite] motion-reduce:animate-none"></span>
+			</div>
+		</li>
+
+		<!-- Row 7 (58%) -->
+		<li class="border-b border-[color:var(--color-border)] last:border-b-0">
+			<div class="flex items-center gap-[var(--spacing-s3)] px-[var(--spacing-s3)] py-[var(--spacing-s4)]">
+				<span
+					class="block h-[13px] w-[54px] shrink-0 rounded-[var(--radius-sm)] bg-[linear-gradient(100deg,var(--color-surface-2)_30%,var(--color-surface-3)_50%,var(--color-surface-2)_70%)] bg-[length:200%_100%] animate-[skel-wave_2.8s_linear_infinite] motion-reduce:animate-none"></span>
+				<span
+					class="inline-flex w-[62px] shrink-0 font-[family-name:var(--font-mono)] text-[length:var(--text-xs)] text-[color:var(--color-border-strong)]">
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-a_0.66s_steps(1,end)_-0.05s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-c_0.66s_steps(1,end)_-0.31s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-b_0.66s_steps(1,end)_-0.12s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-d_0.66s_steps(1,end)_-0.44s_infinite] motion-reduce:before:animate-none"></span>
+					<span
+						class="block w-[0.6em] text-center before:content-['·'] before:animate-[glyph-b_0.66s_steps(1,end)_-0.22s_infinite] motion-reduce:before:animate-none"></span>
+				</span>
+				<span
+					class="block h-[13px] w-[58%] rounded-[var(--radius-sm)] bg-[linear-gradient(100deg,var(--color-surface-2)_30%,var(--color-surface-3)_50%,var(--color-surface-2)_70%)] bg-[length:200%_100%] animate-[skel-wave_2.8s_linear_infinite] motion-reduce:animate-none"></span>
+			</div>
+		</li>
+	</ol>
 	{{end}}
 </div>
 {{end}}
