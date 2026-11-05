@@ -1,12 +1,17 @@
-# fly.toml app configuration file generated for personal-site-serene-haze-831 on 2026-07-18T14:33:23-05:00
+# fly.toml app configuration file generated for go-site on 2026-11-04T18:20:40-06:00
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
-app = 'personal-site-serene-haze-831'
+app = 'go-site'
 primary_region = 'dfw'
 
 [build]
+  [build.args]
+    GO_VERSION = '1.27.1'
+
+[env]
+  PORT = '8080'
 
 [http_service]
   internal_port = 8080
@@ -18,6 +23,5 @@ primary_region = 'dfw'
 
 [[vm]]
   memory = '1gb'
-  cpu_kind = 'shared'
   cpus = 1
   memory_mb = 1024

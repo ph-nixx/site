@@ -1,0 +1,18 @@
+# flyctl launch added from .gitignore
+# LLM tooling
+**/.claude**
+**/.impeccable
+
+# Dev tooling
+**/tmp**
+tailwind
+
+**/.env*
+**/env*
+
+# artifacts
+docs
+fly.toml
+
+# tests
+**/*_test.go
