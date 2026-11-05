@@ -366,13 +366,7 @@ func (r *Repos) dropFromLocal(repoID int64) {
 
 // Resolves a page URL to its repo and file path, then fetches the cached HTML for that file from {repoID}:docs;
 // ErrUnknownRepo for an unknown name, ErrUnknownPath for an unknown route.
-func (r *Repos) Doc(ctx context.Context, URL string) (string, error) {
-	name, route, _ := strings.Cut(strings.Trim(URL, "/"), "/")
-	repo, ok := r.GetByName(name)
-	if !ok {
-		return "", ErrUnknownRepo
-	}
-
+func (r *Repos) Doc(ctx context.Context, repo *Repo, route string) (string, error) {
 	// replace swaps in a new *Repo rather than mutating one, so DocRoutes is safe to read without the lock
 	path, ok := repo.DocRoutes[route]
 	if !ok {

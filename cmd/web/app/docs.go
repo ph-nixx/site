@@ -28,12 +28,18 @@ type docPage struct {
 // with the sidebar; 404 for an unknown repo and a redirect to /{repo name} for an unknown route.
 func (a *App) doc(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	route := r.PathValue("route")
 	// partial and full responses share a URL, so a cache must not serve one for the other
 	w.Header().Set("Vary", "HX-Request")
 	// htmx restoring history it has no snapshot for sends HX-Request too, but expects the full page
 	partial := r.Header.Get("HX-Request") == "true" && r.Header.Get("HX-History-Restore-Request") != "true"
+	repo, ok := a.repos.GetByName(name)
+	if !ok {
+		a.renderErr(w, r, http.StatusNotFound, nil)
+		return
+	}
 
-	html, err := a.repos.Doc(r.Context(), r.URL.Path)
+	html, err := a.repos.Doc(r.Context(), repo, route)
 	switch {
 	case errors.Is(err, repos.ErrUnknownRepo):
 		a.renderErr(w, r, http.StatusNotFound, nil)
@@ -56,12 +62,6 @@ func (a *App) doc(w http.ResponseWriter, r *http.Request) {
 	if partial {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write([]byte(html))
-		return
-	}
-
-	repo, ok := a.repos.GetByName(name)
-	if !ok {
-		a.renderErr(w, r, http.StatusNotFound, nil) // removed by a deep clean between the two lookups
 		return
 	}
 
