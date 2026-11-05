@@ -8,3 +8,6 @@ tailwind**
 
 .env*
 env*
+
+# artifacts
+static/output.css
