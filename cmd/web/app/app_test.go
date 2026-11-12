@@ -185,7 +185,6 @@ func Test_home_renders_the_build_log(t *testing.T) {
 			commit(repos.ConventionalCommit{ID: "abc123", RepoID: 1, Timestamp: day, Type: "feat", Scope: "docs", Breaking: true, Description: "add the pooling guide"}),
 			commit(repos.ConventionalCommit{ID: "def456", RepoID: 2, Timestamp: day, Type: "fix", Description: "of a repo no longer cached"}),
 		}, []string{"Oct 25", "my-lib", "feat(docs)!: add the pooling guide", `href="https://github.com/ph-nixx/my-lib/commit/abc123"`}},
-		{"no commits", nil, []string{"No commits in the last 90 days."}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

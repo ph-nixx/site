@@ -505,6 +505,7 @@ func (r *Repos) dropFromCache(ctx context.Context, repoID int64, expectedSHA str
 		if !errors.Is(err, redis.TxFailedErr) {
 			return ok, err
 		}
+
 		if retries == TX_RETRIES {
 			return false, fmt.Errorf("deep clean aborted by concurrent writes after %d retries", TX_RETRIES)
 		}

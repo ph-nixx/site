@@ -210,6 +210,15 @@ func Test_new_repos_subscribes_and_syncs_local_cache(t *testing.T) {
 		return len(got) == 1 && got[0] != nil
 	}, "repo 3 to appear after a malformed message")
 
+	// Updating an existing repo in the redis cache also updates the local cache
+	client.set(t, Repo{ID: 1, Name: "new one"})
+	client.sub.Publish("repos:1")
+
+	eventually(t, func() bool {
+		got, _ := r.Get(1)
+		return len(got) == 1 && got[0].Name == "new one"
+	}, "repo 1 name to be changed")
+
 	// Cancelling the context stops the loop and closes the subscription.
 	cancel()
 	select {

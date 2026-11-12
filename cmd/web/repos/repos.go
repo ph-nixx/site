@@ -357,6 +357,7 @@ func (r *Repos) dropFromLocal(repoID int64) {
 	if old, ok := r.repoCache[repoID]; ok && r.names[old.Name] == repoID {
 		delete(r.names, old.Name)
 	}
+
 	delete(r.repoCache, repoID)
 	// a new slice, since Commits hands out the old one to callers
 	r.commitCache = slices.DeleteFunc(slices.Clone(r.commitCache), func(c ConventionalCommit) bool {
