@@ -1,13 +1,40 @@
 {{define "terminal"}}
-<div class="flex flex-col gap-s4 [contain:layout_paint] max-[860px]:max-w-[520px]">
+<div class="flex flex-col gap-s4 [contain:layout_paint] max-[860px]:max-w-[520px]"{{with .Term}} style="--term-typed: {{.TypedMS}}ms"{{end}}>
 	<div aria-hidden="true" class="term-seam-in flex items-center gap-s3 text-fg">
 		<svg class="w-9 h-9 stroke-2 shrink-0">
 			<use href="#VsBash"></use>
 		</svg>
 		<hr class="flex-1 border-0 border-t border-border m-0" />
 	</div>
-	<p class="text-fg-muted font-mono text-md">Loading</p>
-	<div class="term-row-in group flex items-center gap-s2 font-mono text-md border-t border-border pt-s3">
+	{{with .Term}}
+	<p class="term-cmd-in flex items-center font-mono text-md text-fg-muted"><span aria-hidden="true">$&nbsp;</span><a
+			href="/{{.Name}}"
+			class="rounded-sm text-fg-muted transition-colors duration-[var(--dur)] ease-[var(--ease-out)] hover:text-fg focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-well),0_0_0_4px_var(--color-focus)]"><span
+				class="term-type block overflow-hidden whitespace-pre underline underline-offset-[3px]" style="--term-n: {{.NameChars}}">{{.Project}}</span></a><span
+			class="term-type overflow-hidden whitespace-pre" style="--term-n: {{.FlagChars}}; --term-at: {{.FlagsAt}}ms"> --range {{.Range}}</span><span
+			aria-hidden="true" class="term-type-caret flex-none inline-block w-[1ch] h-[1.15em] bg-fg"></span></p>
+	<ul aria-label="Most active project metrics" class="flex flex-col gap-s4 list-none font-mono text-md">
+		<li class="term-row-in [--term-i:1] flex items-center gap-s3 border-t border-border pt-s3">
+			<svg aria-hidden="true" class="w-4 h-4 shrink-0 text-link">
+				<use href="#LuChartBellCurve"></use>
+			</svg>
+			<span class="min-w-0 truncate text-fg">{{.Commits}} commits, {{.Share}}% of all activity</span>
+		</li>
+		<li class="term-row-in [--term-i:2] [--term-p:1] flex items-center gap-s3 border-t border-border pt-s3">
+			<svg aria-hidden="true" class="w-4 h-4 shrink-0 text-link">
+				<use href="#LuGitMerge"></use>
+			</svg>
+			<span class="min-w-0 truncate text-fg">pushed {{.Features}} features</span>
+		</li>
+		<li class="term-row-in [--term-i:3] [--term-p:2] flex items-center gap-s3 border-t border-border pt-s3">
+			<svg aria-hidden="true" class="w-4 h-4 shrink-0 text-link">
+				<use href="#LuFlame"></use>
+			</svg>
+			<span class="min-w-0 truncate text-fg">last commit {{.Last}} ago</span>
+		</li>
+	</ul>
+	{{end}}
+	<div class="term-row-in [--term-i:4] [--term-p:3] group flex items-center gap-s2 font-mono text-md border-t border-border pt-s3">
 		<span aria-hidden="true" class="inline-flex items-center text-fg-muted">
 			<span>$&nbsp;</span>
 			<span

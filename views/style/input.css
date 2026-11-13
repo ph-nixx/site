@@ -171,17 +171,52 @@ body {
 }
 
 .term-row-in {
-  animation: term-rise 0.4s var(--ease-out) 2300ms backwards;
+  animation: term-rise 0.4s var(--ease-out) backwards;
 }
 
 .term-caret-beat {
-  animation: caret-blink 1.15s step-end 2300ms 3 forwards;
+  animation: caret-blink 1.15s step-end 3 forwards;
+}
+
+/* output: line 1 lands 200ms after typing ends (a 100ms reach for the enter key, then 100ms), each later line one 150ms step after the one above,
+   plus 500ms for each of the --term-p pauses between output lines that came before it */
+.term-row-in,
+.term-caret-beat {
+  animation-delay: calc(300ms + var(--term-typed, 0ms) + var(--term-i, 0) * 150ms + var(--term-p, 0) * 500ms);
+}
+
+@keyframes term-type {
+  from { width: 0; }
+}
+
+@keyframes term-type-caret {
+  from, to { opacity: 1; }
+}
+
+/* command line: fades in at 100ms, then types from 250ms at 50ms a character (TERM_TYPE_CHAR_MS);
+   the flags span starts --term-at into the typing, leaving a pause after the project name */
+.term-cmd-in {
+  animation: term-rise 0.4s var(--ease-out) 100ms backwards;
+}
+
+.term-type {
+  width: calc(var(--term-n) * 1ch);
+  animation: term-type calc(var(--term-n) * 50ms) steps(var(--term-n), end) calc(250ms + var(--term-at, 0ms)) backwards;
+}
+
+/* caret rides the end of the typed text, sits still through the reach for enter, then hands off to the input row as output starts */
+.term-type-caret {
+  opacity: 0;
+  animation: term-type-caret calc(var(--term-typed) + 200ms) linear 250ms;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .term-seam-in,
   .term-row-in,
-  .term-caret-beat {
+  .term-caret-beat,
+  .term-cmd-in,
+  .term-type,
+  .term-type-caret {
     animation: none;
   }
 }

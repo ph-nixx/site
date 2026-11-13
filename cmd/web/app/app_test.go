@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -207,6 +208,126 @@ func Test_home_renders_the_build_log(t *testing.T) {
 			}
 			if strings.Contains(body, "of a repo no longer cached") {
 				t.Error("expected the commit of an uncached repo left out")
+			}
+		})
+	}
+}
+
+// formatDuration rounds to whole hours, never below 1, and switches to whole days once that rounds to 24 or more.
+func Test_formatDuration_rounds_to_hours_then_days(t *testing.T) {
+	after := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		d    time.Duration
+		want string
+	}{
+		{"zero is clamped to an hour", 0, "1h"},
+		{"reversed is clamped to an hour", -5 * time.Hour, "1h"},
+		{"minutes are clamped to an hour", 10 * time.Minute, "1h"},
+		{"rounds down under the half hour", time.Hour + 29*time.Minute, "1h"},
+		{"rounds up at the half hour", time.Hour + 30*time.Minute, "2h"},
+		{"whole hours", 3 * time.Hour, "3h"},
+		{"23 hours stays in hours", 23 * time.Hour, "23h"},
+		{"just under 23.5 hours stays in hours", 23*time.Hour + 29*time.Minute, "23h"},
+		{"rounding up to 24 hours switches to days", 23*time.Hour + 30*time.Minute, "1d"},
+		{"24 hours is a day", 24 * time.Hour, "1d"},
+		{"rounds down under the half day", 35*time.Hour + 59*time.Minute, "1d"},
+		{"rounds up at the half day", 36 * time.Hour, "2d"},
+		{"rounds up to 30 days", 29*24*time.Hour + 12*time.Hour, "30d"},
+		{"30 days", 30 * 24 * time.Hour, "30d"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatDuration(after, after.Add(tt.d)); got != tt.want {
+				t.Errorf("formatDuration over %v = %q, want %q", tt.d, got, tt.want)
+			}
+		})
+	}
+}
+
+// mostActive picks the repo with the most commits in (after, before], breaking ties by the newest commit, and returns
+// its stats with the typing choreography for its command, or nil when no commit falls in the interval.
+func Test_mostActive_picks_the_busiest_repo_in_the_interval(t *testing.T) {
+	before := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	after := before.Add(-TERM_RANGE)
+	day := 24 * time.Hour
+	hash := map[string]string{}
+	for _, repo := range []repos.Repo{{ID: 1, Name: "site", Title: "Site"}, {ID: 2, Name: "pool", Title: "Pool"}} {
+		b, err := json.Marshal(repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hash[strconv.FormatInt(repo.ID, 10)] = string(b)
+	}
+	commit := func(repoID int64, typ string, at time.Time) repos.ConventionalCommit {
+		return repos.ConventionalCommit{ID: typ + at.Format(time.RFC3339), RepoID: repoID, Timestamp: at, Type: typ, Description: "change"}
+	}
+	discard := slog.New(slog.DiscardHandler)
+
+	tests := []struct {
+		name    string
+		commits []repos.ConventionalCommit
+		want    *termStats
+	}{
+		{"the interval excludes after and anything past before", []repos.ConventionalCommit{
+			commit(1, "feat", before.Add(-3*time.Hour)),
+			commit(1, "fix", before.Add(-day)),
+			commit(1, "feat", before.Add(-2*day)),
+			commit(2, "feat", before.Add(-5*day)),
+			// Pool would win if either bound were inclusive the wrong way.
+			commit(2, "feat", after),
+			commit(2, "fix", after),
+			commit(2, "chore", after),
+			commit(2, "feat", before.Add(time.Hour)),
+		}, &termStats{
+			Project: "Site", Name: "site", Range: "30d", Commits: 3, Share: 75, Features: 2, Last: "3h",
+			NameChars: 4, FlagChars: 12, FlagsAt: 400, TypedMS: 1000,
+		}},
+		{"a tie goes to the newest commit", []repos.ConventionalCommit{
+			commit(1, "feat", before.Add(-2*day)),
+			commit(1, "feat", before.Add(-3*day)),
+			commit(2, "fix", before.Add(-time.Hour)),
+			commit(2, "feat", before.Add(-10*day)),
+		}, &termStats{
+			Project: "Pool", Name: "pool", Range: "30d", Commits: 2, Share: 50, Features: 1, Last: "1h",
+			NameChars: 4, FlagChars: 12, FlagsAt: 400, TypedMS: 1000,
+		}},
+		{"a commit at before counts", []repos.ConventionalCommit{
+			commit(1, "docs", before),
+		}, &termStats{
+			Project: "Site", Name: "site", Range: "30d", Commits: 1, Share: 100, Features: 0, Last: "1h",
+			NameChars: 4, FlagChars: 12, FlagsAt: 400, TypedMS: 1000,
+		}},
+		{"no commits in the interval", []repos.ConventionalCommit{
+			commit(1, "feat", after.Add(-day)),
+			commit(2, "feat", after),
+		}, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// The commit log is served newest first.
+			slices.SortFunc(tt.commits, func(a, b repos.ConventionalCommit) int { return b.Timestamp.Compare(a.Timestamp) })
+			client := newMockClient(hash)
+			for _, c := range tt.commits {
+				b, err := json.Marshal(c)
+				if err != nil {
+					t.Fatal(err)
+				}
+				client.commits = append(client.commits, string(b))
+			}
+			r, err := repos.New(t.Context(), client, nil, discard)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			got := mostActive(r, after, before)
+			switch {
+			case tt.want == nil && got != nil:
+				t.Errorf("mostActive = %+v, want nil", *got)
+			case tt.want != nil && got == nil:
+				t.Errorf("mostActive = nil, want %+v", *tt.want)
+			case tt.want != nil && *got != *tt.want:
+				t.Errorf("mostActive = %+v, want %+v", *got, *tt.want)
 			}
 		})
 	}
