@@ -154,7 +154,7 @@ func reconcileDocsConfig(docsToml, readMe File, event *github.PushEvent, cached 
 		Owner:       repo.GetOwner().GetLogin(),
 		Name:        repo.GetName(),
 		SHA:         event.GetAfter(),
-		Title:       repo.GetName(),
+		Title:       capitalize(repo.GetName()),
 		PushCommits: !usable,
 	}
 	keys := tableKeys(md)
