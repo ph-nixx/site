@@ -154,7 +154,7 @@ func reconcileDocsConfig(docsToml, readMe File, event *github.PushEvent, cached 
 		Owner:       repo.GetOwner().GetLogin(),
 		Name:        repo.GetName(),
 		SHA:         event.GetAfter(),
-		Title:       capitalize(repo.GetName()),
+		Title:       repo.GetName(),
 		PushCommits: !usable,
 	}
 	keys := tableKeys(md)
@@ -168,6 +168,10 @@ func reconcileDocsConfig(docsToml, readMe File, event *github.PushEvent, cached 
 		}
 	}
 	if project, ok := doc["project"].(map[string]any); ok {
+		if title, ok := project["title"].(string); ok {
+			cfg.Title = title
+		}
+
 		if svg, ok := project["svg"].(string); ok {
 			cfg.SVG = svg
 		}

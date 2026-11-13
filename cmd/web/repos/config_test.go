@@ -96,3 +96,23 @@ segment = "Blog"
 		}
 	}
 }
+
+func Test_can_change_project_name(t *testing.T) {
+	docsToml := File{Status: FileFound, Data: []byte(`
+[project]
+title = "new name"
+`)}
+	cached := &Repo{Title: "old name", LastIngestedSHA: "a", DocSections: []DocSection{}}
+	event := &github.PushEvent{After: github.Ptr("b"), Repo: &github.PushEventRepository{Name: github.Ptr("one")}}
+	comp := &github.CommitsComparison{Status: github.Ptr("ahead")}
+	cfg, err := reconcileDocsConfig(docsToml, File{Status: FileFound}, event, cached, comp, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expect := "new name"
+	got := cfg.Title
+	if expect != got {
+		t.Errorf("expected %v, got %v", expect, got)
+	}
+}
