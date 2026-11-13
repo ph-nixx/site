@@ -44,7 +44,7 @@ func (a *App) home(w http.ResponseWriter, r *http.Request) {
 		}
 		page.Log = append(page.Log, logEntry{
 			Date:    c.Timestamp.UTC().Format("Jan 2"),
-			Project: repo[0].Name,
+			Project: repo[0].Title,
 			Message: header + ": " + c.Description,
 			Href:    "https://github.com/" + repo[0].FullName + "/commit/" + c.ID,
 		})

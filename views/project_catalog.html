@@ -13,7 +13,7 @@
 				<div class="flex items-center gap-s3">
 					{{if $r.SVG}}<span aria-hidden="true" style="mask-image: url(/static/icons/{{$r.ID}})"
 						class="w-5 h-5 shrink-0 text-fg bg-current [mask-size:contain] [mask-repeat:no-repeat] [mask-position:center]"></span>{{end}}
-					<h3 class="text-lg font-bold text-fg">{{$r.Name}}</h3>
+					<h3 class="text-lg font-bold text-fg">{{$r.Title}}</h3>
 				</div>
 				{{with $r.Description}}<p class="text-sm leading-[1.65] text-fg-muted">{{.}}</p>{{end}}
 			</a>
